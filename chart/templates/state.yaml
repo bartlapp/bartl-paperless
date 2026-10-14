@@ -1,0 +1,1 @@
+{{ include "bartl.state" (dict "app" "paperless" "root" .) }}
