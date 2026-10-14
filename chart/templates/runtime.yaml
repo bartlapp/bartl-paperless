@@ -71,7 +71,7 @@ spec:
               python3 manage.py migrate --noinput
               mkdir -p /usr/src/paperless/data/index
               python3 manage.py document_index reindex --if-needed
-              python3 manage.py shell -c 'from django.contrib.auth.models import Group, Permission; from django.contrib.contenttypes.models import ContentType; from documents.models import Document; g,_=Group.objects.get_or_create(name="bartl-users"); g.permissions.add(*Permission.objects.filter(codename__in=["add_document","view_document"],content_type=ContentType.objects.get_for_model(Document)))'
+              python3 manage.py shell -c 'from django.contrib.auth.models import Group, Permission; from django.contrib.contenttypes.models import ContentType; from documents.models import Document, UiSettings; g,_=Group.objects.get_or_create(name="bartl-users"); g.permissions.add(*Permission.objects.filter(codename__in=["add_document","view_document"],content_type=ContentType.objects.get_for_model(Document))); g.permissions.add(Permission.objects.get(codename="view_uisettings",content_type=ContentType.objects.get_for_model(UiSettings)))'
               printf '%s' '{{ .Values.generation }}' > /state/migrated.tmp
               mv /state/migrated.tmp /state/migrated
           env: {{ include "paperless.env" . | nindent 12 }}
