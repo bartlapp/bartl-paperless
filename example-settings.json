@@ -1,7 +1,6 @@
 {
-  "generation": "bartl-source",
+  "generation": "bartl-paperless-source",
   "intent": "fresh",
-  "phase": "state",
   "identity": {
     "issuer": "http://identity.bartl.test:18080/realms/bartl",
     "paperless": "http://paperless.bartl.test:18081",
@@ -10,12 +9,14 @@
     "provider": "keycloak"
   },
   "initialization": {"database": "postgresql-17", "ocr": "eng", "timezone": "UTC", "stateFormat": 1},
-  "placement": {"identityIP": "10.43.100.10"},
-  "versions": {"keycloak": "26.8.0", "paperless": "3.3.0"},
+  "placement": {"identityIP": "10.43.100.34"},
+  "versions": {"paperless": "3.3.0"},
   "images": {
-    "keycloak": "quay.io/keycloak/keycloak@sha256:27b3230fbabb8c9ff3c66c864cf09dcd8a41aca82e5100679d109ef0eeb05741",
     "paperless": "ghcr.io/paperless-ngx/paperless-ngx@sha256:6b94799bc769a063b3340cc5847402e626d4d91d29a295a8e747f8e9bead4207",
     "postgres": "docker.io/library/postgres@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3",
-    "redis": "docker.io/library/redis@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621"
+    "redis": "docker.io/library/redis@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621",
+    "tika": "docker.io/apache/tika@sha256:90b7fa1dc018434075fce9e1d9b88b1e3d0ea6979d0cf86e116c79a8073ae973",
+    "gotenberg": "docker.io/gotenberg/gotenberg@sha256:f29984bd1e226bf1b93ba90af06000afa8b315853e99d27b9aaa41b93f15c769",
+    "runtime": "docker.io/library/bartl-paperless-native@sha256:941cc482371b5906c5e9c5ab685148280dd66e7a3d6c5ee328a5ec4b926a7853"
   }
 }

@@ -1,157 +1,91 @@
 {{- define "paperless.env" }}
 - {name: PAPERLESS_DBHOST, value: paperless-db}
 - {name: PAPERLESS_DBNAME, value: bartl}
-- {name: PAPERLESS_DBUSER, value: bartl}
-- name: PAPERLESS_DBPASS
-  valueFrom: {secretKeyRef: {name: paperless-credentials, key: db-password}}
-- name: PAPERLESS_SECRET_KEY
-  valueFrom: {secretKeyRef: {name: paperless-credentials, key: paperless-key}}
-- {name: PAPERLESS_REDIS, value: "redis://redis:6379"}
+- {name: PAPERLESS_REDIS, value: 'redis://redis:6379'}
 - {name: PAPERLESS_URL, value: {{ .Values.identity.paperless | quote }}}
 - {name: PAPERLESS_TIME_ZONE, value: {{ .Values.initialization.timezone | quote }}}
 - {name: PAPERLESS_OCR_LANGUAGE, value: {{ .Values.initialization.ocr | quote }}}
+- {name: PAPERLESS_SCRATCH_DIR, value: /usr/src/paperless/data/scratch}
 - {name: PAPERLESS_APPS, value: allauth.socialaccount.providers.openid_connect}
-- {name: PAPERLESS_ACCOUNT_ALLOW_SIGNUPS, value: "false"}
-- {name: PAPERLESS_SOCIALACCOUNT_ALLOW_SIGNUPS, value: "true"}
-- {name: PAPERLESS_SOCIAL_AUTO_SIGNUP, value: "true"}
-- {name: PAPERLESS_ACCOUNT_DEFAULT_HTTP_PROTOCOL, value: http}
+- {name: PAPERLESS_ACCOUNT_ALLOW_SIGNUPS, value: 'false'}
+- {name: PAPERLESS_SOCIALACCOUNT_ALLOW_SIGNUPS, value: 'true'}
+- {name: PAPERLESS_SOCIAL_AUTO_SIGNUP, value: 'true'}
+- {name: PAPERLESS_ACCOUNT_DEFAULT_HTTP_PROTOCOL, value: {{ .Values.identity.paperless | splitList "://" | first | quote }}}
 - {name: PAPERLESS_SOCIAL_ACCOUNT_DEFAULT_GROUPS, value: bartl-users}
-- {name: PAPERLESS_ACCOUNT_EMAIL_VERIFICATION, value: none}
-- {name: PAPERLESS_DISABLE_REGULAR_LOGIN, value: "true"}
-- name: CLIENT_SECRET
-  valueFrom: {secretKeyRef: {name: paperless-credentials, key: client-secret}}
-- {name: USERMAP_UID, value: "0"}
-- {name: USERMAP_GID, value: "0"}
+- {name: PAPERLESS_DISABLE_REGULAR_LOGIN, value: 'true'}
+- {name: PAPERLESS_CSRF_TRUSTED_ORIGINS, value: {{ .Values.identity.paperless | quote }}}
+- {name: PAPERLESS_AUDIT_LOG_ENABLED, value: 'true'}
+- {name: PAPERLESS_TIKA_ENABLED, value: 'true'}
+- {name: PAPERLESS_TIKA_ENDPOINT, value: 'http://tika:9998'}
+- {name: PAPERLESS_TIKA_GOTENBERG_ENDPOINT, value: 'http://gotenberg:3000'}
+- {name: PAPERLESS_TRAIN_TASK_CRON, value: disable}
+- {name: PAPERLESS_EMAIL_TASK_CRON, value: disable}
+- {name: PAPERLESS_WORKFLOW_SCHEDULED_TASK_CRON, value: disable}
+- {name: PAPERLESS_LLM_INDEX_TASK_CRON, value: disable}
+- {name: PAPERLESS_EMPTY_TRASH_TASK_CRON, value: disable}
+- {name: PAPERLESS_INDEX_TASK_CRON, value: disable}
+- {name: PAPERLESS_SANITY_TASK_CRON, value: disable}
+{{- if hasPrefix "https://" .Values.identity.paperless }}
+- {name: PAPERLESS_PROXY_SSL_HEADER, value: 'HTTP_X_FORWARDED_PROTO,https'}
 {{- end }}
-{{- define "paperless.volumes" }}
-- name: state
-  persistentVolumeClaim: {claimName: paperless-state}
+- name: PAPERLESS_SECRET_KEY
+  valueFrom: {secretKeyRef: {name: paperless-inputs, key: paperless-key}}
+- {name: PAPERLESS_BIND_ADDR, value: 127.0.0.1}
 {{- end }}
 {{- define "paperless.mounts" }}
+- {name: state, mountPath: /state}
 - {name: state, mountPath: /usr/src/paperless/data, subPath: data}
 - {name: state, mountPath: /usr/src/paperless/media, subPath: media}
 - {name: state, mountPath: /usr/src/paperless/consume, subPath: consume}
-- {name: state, mountPath: /state}
+- {name: broker, mountPath: /broker, readOnly: true}
+- {name: recovery, mountPath: /recovery, readOnly: true}
+- {name: inputs, mountPath: /inputs, readOnly: true}
+- {name: secrets, mountPath: /secrets, readOnly: true}
 {{- end }}
-{{- if or (eq .Values.phase "migrate") (eq .Values.phase "runtime") }}
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: paperless-migrate
-spec:
-  backoffLimit: 2
-  activeDeadlineSeconds: 600
-  template:
-    spec:
-      restartPolicy: Never
-      containers:
-        - name: migrate
-          image: {{ .Values.images.paperless | quote }}
-          command: [bash, -ec]
-          args:
-            - |
-              exec 8>/state/lifecycle.lock
-              flock -n 8 || exit 20
-              test "$(cat /state/prepared)" = '{{ .Values.generation }}'
-              if test -f /state/migrated; then
-                test "$(cat /state/migrated)" = '{{ .Values.generation }}'; exit 0
-              fi
-              python3 - <<'PY'
-              import os, time, redis
-              client = redis.Redis.from_url(os.environ['PAPERLESS_REDIS'])
-              for attempt in range(60):
-                  try:
-                      client.ping()
-                      break
-                  except redis.RedisError:
-                      if attempt == 59:
-                          raise
-                      time.sleep(2)
-              PY
-              python3 manage.py migrate --noinput
-              mkdir -p /usr/src/paperless/data/index
-              python3 manage.py document_index reindex --if-needed
-              python3 manage.py shell -c 'from django.contrib.auth.models import Group, Permission; from django.contrib.contenttypes.models import ContentType; from documents.models import Document, UiSettings; g,_=Group.objects.get_or_create(name="bartl-users"); g.permissions.add(*Permission.objects.filter(codename__in=["add_document","view_document"],content_type=ContentType.objects.get_for_model(Document))); g.permissions.add(Permission.objects.get(codename="view_uisettings",content_type=ContentType.objects.get_for_model(UiSettings)))'
-              printf '%s' '{{ .Values.generation }}' > /state/migrated.tmp
-              mv /state/migrated.tmp /state/migrated
-          env: {{ include "paperless.env" . | nindent 12 }}
-          volumeMounts: {{ include "paperless.mounts" . | nindent 12 }}
-      volumes: {{ include "paperless.volumes" . | nindent 8 }}
-{{- end }}
-{{- if or (eq .Values.phase "migrate") (eq .Values.phase "runtime") }}
----
-apiVersion: v1
-kind: Service
-metadata: {name: redis}
-spec:
-  selector: {app: redis}
-  ports: [{port: 6379}]
----
-apiVersion: apps/v1
-kind: Deployment
-metadata: {name: redis}
-spec:
-  selector:
-    matchLabels: {app: redis}
-  template:
-    metadata:
-      labels: {app: redis}
-    spec:
-      containers:
-        - name: redis
-          image: {{ .Values.images.redis | quote }}
-          args: [--save, "", --appendonly, "no"]
-{{- end }}
-{{- if eq .Values.phase "runtime" }}
----
 apiVersion: v1
 kind: Service
 metadata: {name: documents}
 spec:
   selector: {app: paperless}
-  ports: [{port: 18081, targetPort: 8000}]
+  ports: [{port: 18081, targetPort: 8080}]
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata: {name: paperless}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicas | int }}
   strategy: {type: Recreate}
-  selector:
-    matchLabels: {app: paperless}
+  selector: {matchLabels: {app: paperless}}
   template:
     metadata:
       labels: {app: paperless}
+      annotations:
+        bartl/settings: {{ toJson .Values | sha256sum | quote }}
     spec:
+      terminationGracePeriodSeconds: 60
+      automountServiceAccountToken: false
       {{- if .Values.placement.identityIP }}
       hostAliases:
         - ip: {{ .Values.placement.identityIP | quote }}
-          hostnames: [{{ .Values.identity.issuer | trimPrefix "http://" | splitList "/" | first | splitList ":" | first | quote }}]
+          hostnames: [{{ .Values.identity.issuer | trimPrefix "http://" | trimPrefix "https://" | splitList "/" | first | splitList ":" | first | quote }}]
       {{- end }}
-      initContainers:
-        - name: prepared-and-identity
-          image: {{ .Values.images.paperless | quote }}
-          command: [python3, -c]
-          args:
-            - |
-              import pathlib, urllib.request, json
-              assert pathlib.Path('/state/migrated').read_text() == '{{ .Values.generation }}', 'Exact generation not migrated'
-              d=json.load(urllib.request.urlopen('{{ .Values.identity.issuer }}/.well-known/openid-configuration',timeout=10))
-              assert d['issuer']=='{{ .Values.identity.issuer }}', 'Wrong persistent issuer'
-          volumeMounts: [{name: state, mountPath: /state}]
       containers:
         - name: paperless
-          image: {{ .Values.images.paperless | quote }}
-          command: [bash, -ec]
-          args:
-            - |
-              export PAPERLESS_SOCIALACCOUNT_PROVIDERS="$(python3 -c 'import os,json; print(json.dumps({"openid_connect":{"APPS":[{"provider_id":{{ .Values.identity.provider | quote }},"name":"OIDC","client_id":{{ .Values.identity.client | quote }},"secret":os.environ["CLIENT_SECRET"],"settings":{"server_url":"{{ .Values.identity.issuer }}","token_auth_method":"client_secret_basic"}}]}}))')"
-              exec /init
+          image: {{ .Values.images.runtime | quote }}
+          imagePullPolicy: IfNotPresent
+          command: [python3, /opt/bartl/runtime.py]
+          args: [serve]
           env: {{ include "paperless.env" . | nindent 12 }}
           readinessProbe:
-            httpGet: {path: /accounts/login/, port: 8000}
+            httpGet: {path: /accounts/login/, port: 8080}
             periodSeconds: 3
-          # No dependency-sensitive liveness probe. Runtime identity failure cannot restart workers.
           volumeMounts: {{ include "paperless.mounts" . | nindent 12 }}
-      volumes: {{ include "paperless.volumes" . | nindent 8 }}
-{{- end }}
+      volumes:
+        - {name: state, persistentVolumeClaim: {claimName: paperless-state}}
+        - {name: broker, persistentVolumeClaim: {claimName: paperless-broker}}
+        - {name: recovery, persistentVolumeClaim: {claimName: paperless-recovery}}
+        - name: inputs
+          configMap:
+            name: paperless-contract
+            items: [{key: settings, path: settings.json}, {key: allocation, path: allocation.json}]
+        - {name: secrets, secret: {secretName: paperless-inputs, defaultMode: 288}}

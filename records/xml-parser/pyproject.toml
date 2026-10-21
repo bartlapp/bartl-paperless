@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "paperless-records-xml"
+version = "1.0.0"
+description = "Local XML text extraction for the Paperless-ngx native consumer"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = ["defusedxml==0.7.1"]
+
+[project.entry-points."paperless_ngx.parsers"]
+records_xml = "paperless_records_xml.parser:XMLDocumentParser"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/paperless_records_xml"]

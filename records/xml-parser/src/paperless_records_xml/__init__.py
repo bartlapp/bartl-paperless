@@ -1,0 +1,1 @@
+"""Local, non-converting XML parser plugin for Paperless-ngx."""
