@@ -26,7 +26,7 @@
 - {name: PAPERLESS_INDEX_TASK_CRON, value: disable}
 - {name: PAPERLESS_SANITY_TASK_CRON, value: disable}
 {{- if hasPrefix "https://" .Values.identity.paperless }}
-- {name: PAPERLESS_PROXY_SSL_HEADER, value: 'HTTP_X_FORWARDED_PROTO,https'}
+- {name: PAPERLESS_PROXY_SSL_HEADER, value: '["HTTP_X_FORWARDED_PROTO", "https"]'}
 {{- end }}
 - name: PAPERLESS_SECRET_KEY
   valueFrom: {secretKeyRef: {name: paperless-inputs, key: paperless-key}}
