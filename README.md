@@ -1,6 +1,6 @@
 # Paperless lifecycle evidence
 
-The experimental Python supervisor, native helpers, chart, build scripts and tests were retired on 25 October 2026 at Florian's request. No replacement implementation is approved. The [consolidated design review](../floriankesslergmbh/workstreams/betriebsphilosophie/proof/Kubernetes-Lifecycle.md) is the active carrier.
+The experimental implementation was retired on 25 October 2026. Florian has approved the bounded [Bash/native integration design](../floriankesslergmbh/workstreams/betriebsphilosophie/proof/Kubernetes-Lifecycle.md#execution), Paperless's millisecond timestamp precision and controlled records-release review. Implement and qualify serially after Keycloak in a fresh session, within the [execution and approval boundaries](../floriankesslergmbh/workstreams/betriebsphilosophie/proof/Kubernetes-Lifecycle.md#review). No new paid lab or production deployment is authorized.
 
 ## Native state and lifecycle findings
 
