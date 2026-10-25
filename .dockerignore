@@ -1,6 +1,0 @@
-*
-!Dockerfile
-!runtime.py
-!native-profiles.json
-!records
-!records/**

@@ -1,5 +1,0 @@
-apiVersion: v2
-name: bartl-paperless
-version: 0.3.0
-type: application
-description: Paperless state reconstruction, OIDC and worker gates
