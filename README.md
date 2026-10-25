@@ -1,6 +1,8 @@
 # Paperless lifecycle evidence
 
-The experimental implementation was retired on 25 October 2026. Florian has approved the bounded [Bash/native integration design](../floriankesslergmbh/workstreams/betriebsphilosophie/proof/Kubernetes-Lifecycle.md#execution), Paperless's millisecond timestamp precision and controlled records-release review. Implement and qualify serially after Keycloak in a fresh session, within the [execution and approval boundaries](../floriankesslergmbh/workstreams/betriebsphilosophie/proof/Kubernetes-Lifecycle.md#review). No new paid lab or production deployment is authorized.
+The experimental implementation was retired on 25 October 2026. The native exporter/importer subsequently passed the [25 October recovery proof](../floriankesslergmbh/workstreams/betriebsphilosophie/proof/evidence/2026-10-25-paperless-native.json); its millisecond timestamp precision and controlled records-release review are accepted. Replacement runtime work remains stopped. Follow the corrected [startup contract](../floriankesslergmbh/workstreams/betriebsphilosophie/proof/Kubernetes-Lifecycle.md#startup) and [implementation handoff](../floriankesslergmbh/workstreams/betriebsphilosophie/proof/README.md#implementation-handoff), after Keycloak. No image builds, new lab or production deployment are authorized by this document correction.
+
+Ordinary container start observes actual owned state and compatibility, then retains upstream `/init`, s6 ordering and normal readiness. Same-Pod restart repeats observation. It needs neither backup access nor a records-release review, token-reacquisition exercise or repeated document/SSO qualification. Initialization and reconstruction must prevent incomplete state from serving; recovery additionally verifies restored documents, permissions, search and token reacquisition and applies the [later-records review](../floriankesslergmbh/workstreams/betriebsphilosophie/proof/Kubernetes-Lifecycle.md#records-after-restore) before release.
 
 ## Native state and lifecycle findings
 
@@ -8,7 +10,7 @@ The experiment covered Paperless 3.3.0/3.3.1 with PostgreSQL 17.6, document file
 
 The retained native profiles distinguish the fresh and dump/restored schema representations. PostgreSQL deparses an equivalent MFA partial-index predicate differently after restore. The profiles, complete state inventory and exact native checks remain in the [read-only source snapshot](../floriankesslergmbh/workstreams/betriebsphilosophie/.lab/keycloak-shared-2026-10-24/retained/reset-2026-10-25/working-source/paperless/).
 
-The experimental capture bundled database.dump, files.tar, manifest.json and SHA256SUMS, with data/media/consume and broker state. That is a tested format, not the selected format for the replacement. Native document export/import and database/files capture are being compared in the design review.
+The experimental capture bundled database.dump, files.tar, manifest.json and SHA256SUMS, with data/media/consume and broker state. That historical format is not the selected replacement. The [native procedure](../floriankesslergmbh/workstreams/betriebsphilosophie/proof/Kubernetes-Lifecycle.md#native-backup-and-restore) uses upstream document export/import after settling work and stopping writers, then Restic publication of the complete export. Native import rebuilds search; API tokens are reacquired. The settled-work proof does not qualify arbitrary busy-crash recovery.
 
 ## Records and processing findings
 
