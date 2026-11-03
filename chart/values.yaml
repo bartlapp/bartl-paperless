@@ -1,0 +1,32 @@
+controller:
+  image: localhost/bartl-paperless-controller:0.1.0
+  imagePullPolicy: IfNotPresent
+identity:
+  installation: ""
+  instance: ""
+replicas: 1
+version: "3.3.1"
+images:
+  runtime330: localhost/bartl-paperless:3.3.0-0.1.0
+  runtime331: localhost/bartl-paperless:3.3.1-0.1.0
+  postgres: docker.io/library/postgres@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+  redis: docker.io/library/redis@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621
+claims:
+  storage: ""
+  database: ""
+  broker: ""
+  staging: ""
+configurationSecret: ""
+bootstrapSecret: ""
+backup:
+  repository: ""
+  readerSecret: ""
+  writerSecret: ""
+  schedule: ""
+  timeZone: UTC
+  drainSeconds: 300
+ingress:
+  enabled: false
+  host: ""
+  className: traefik
+  tlsSecret: ""

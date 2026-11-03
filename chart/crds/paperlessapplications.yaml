@@ -1,0 +1,167 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: paperlessapplications.paperless.bartl.sh
+spec:
+  group: paperless.bartl.sh
+  scope: Namespaced
+  names:
+    plural: paperlessapplications
+    singular: paperlessapplication
+    kind: PaperlessApplication
+    shortNames: [paperless]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Version
+          type: string
+          jsonPath: .spec.version
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [identity, images, claims, configurationSecret]
+              properties:
+                identity:
+                  type: object
+                  required: [installation, instance]
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: Logical application identity is immutable
+                  properties:
+                    installation:
+                      type: string
+                      minLength: 1
+                      maxLength: 128
+                    instance:
+                      type: string
+                      minLength: 1
+                      maxLength: 128
+                replicas:
+                  type: integer
+                  default: 1
+                  enum: [0, 1]
+                version:
+                  type: string
+                  default: "3.3.1"
+                  enum: ["3.3.0", "3.3.1"]
+                  x-kubernetes-validations:
+                    - rule: "oldSelf != '3.3.1' || self == '3.3.1'"
+                      message: Downgrades are not supported
+                images:
+                  type: object
+                  required: [runtime330, runtime331, postgres, redis]
+                  properties:
+                    runtime330:
+                      type: string
+                      minLength: 1
+                    runtime331:
+                      type: string
+                      minLength: 1
+                    postgres:
+                      type: string
+                      minLength: 1
+                    redis:
+                      type: string
+                      minLength: 1
+                claims:
+                  type: object
+                  required: [storage, database, broker, staging]
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: Persistent volume claims are immutable
+                    - rule: "self.storage != self.database && self.storage != self.broker && self.storage != self.staging && self.database != self.broker && self.database != self.staging && self.broker != self.staging"
+                      message: Each state boundary requires its own PVC
+                  properties:
+                    storage:
+                      type: string
+                      minLength: 1
+                      maxLength: 253
+                    database:
+                      type: string
+                      minLength: 1
+                      maxLength: 253
+                    broker:
+                      type: string
+                      minLength: 1
+                      maxLength: 253
+                    staging:
+                      type: string
+                      minLength: 1
+                      maxLength: 253
+                configurationSecret:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+                bootstrapSecret:
+                  type: string
+                  maxLength: 253
+                  default: ""
+                backup:
+                  type: object
+                  default: {}
+                  properties:
+                    repository:
+                      type: string
+                      default: ""
+                    readerSecret:
+                      type: string
+                      maxLength: 253
+                      default: ""
+                    writerSecret:
+                      type: string
+                      maxLength: 253
+                      default: ""
+                    schedule:
+                      type: string
+                      default: ""
+                    timeZone:
+                      type: string
+                      minLength: 1
+                      default: UTC
+                    drainSeconds:
+                      type: integer
+                      minimum: 1
+                      maximum: 86400
+                      default: 300
+                ingress:
+                  type: object
+                  default: {}
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    host:
+                      type: string
+                      default: ""
+                    className:
+                      type: string
+                      default: traefik
+                    tlsSecret:
+                      type: string
+                      default: ""
+                  x-kubernetes-validations:
+                    - rule: "!has(self.enabled) || !self.enabled || (has(self.host) && size(self.host) > 0)"
+                      message: Ingress requires a hostname
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

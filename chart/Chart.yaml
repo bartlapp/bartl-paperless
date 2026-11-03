@@ -1,0 +1,7 @@
+apiVersion: v2
+name: bartl-paperless
+description: Native Paperless lifecycle controller and application intent
+type: application
+version: 0.1.0
+appVersion: "3.3.1"
+kubeVersion: ">=1.30.0-0"

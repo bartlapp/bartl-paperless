@@ -1,0 +1,96 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: paperless-controller
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: paperless-native
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: paperless-controller
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [paperless.bartl.sh]
+    resources: [paperlessapplications]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [paperless.bartl.sh]
+    resources: [paperlessapplications/status, paperlessapplications/finalizers]
+    verbs: [get, update, patch]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [""]
+    resources: [services, pods]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [get, list, watch, create, update, patch]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch, create, update, patch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [delete]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: paperless-controller
+  namespace: {{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: paperless-controller
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: paperless-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: paperless-native
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [paperless.bartl.sh]
+    resources: [paperlessapplications]
+    resourceNames: [paperless]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims, pods]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: paperless-native
+  namespace: {{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: paperless-native
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: paperless-native

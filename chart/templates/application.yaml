@@ -1,0 +1,29 @@
+{{- if ne .Release.Name "paperless" }}
+{{- fail "This package requires release name paperless and one installation per namespace" }}
+{{- end }}
+apiVersion: paperless.bartl.sh/v1alpha1
+kind: PaperlessApplication
+metadata:
+  name: paperless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/part-of: bartl-paperless
+spec:
+  identity:
+    installation: {{ required "identity.installation is required" .Values.identity.installation | quote }}
+    instance: {{ required "identity.instance is required" .Values.identity.instance | quote }}
+  replicas: {{ .Values.replicas }}
+  version: {{ .Values.version | quote }}
+  images:
+    {{- toYaml .Values.images | nindent 4 }}
+  claims:
+    storage: {{ required "claims.storage must name an existing PVC" .Values.claims.storage | quote }}
+    database: {{ required "claims.database must name an existing PVC" .Values.claims.database | quote }}
+    broker: {{ required "claims.broker must name an existing PVC" .Values.claims.broker | quote }}
+    staging: {{ required "claims.staging must name an existing PVC" .Values.claims.staging | quote }}
+  configurationSecret: {{ required "configurationSecret is required" .Values.configurationSecret | quote }}
+  bootstrapSecret: {{ .Values.bootstrapSecret | quote }}
+  backup:
+    {{- toYaml .Values.backup | nindent 4 }}
+  ingress:
+    {{- toYaml .Values.ingress | nindent 4 }}

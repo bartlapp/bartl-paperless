@@ -1,0 +1,14 @@
+**
+!Dockerfile
+!Controller.Dockerfile
+!go.mod
+!go.sum
+!api/
+!api/**
+!internal/
+!internal/**
+!cmd/
+!cmd/**
+!runtime/
+!runtime/native.py
+!runtime/https_settings.py
