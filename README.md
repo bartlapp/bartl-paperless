@@ -4,6 +4,10 @@ The native exporter/importer passed the [25 October recovery proof](../../floria
 
 Implement against the [Bartl application contract](../bartl-app/README.md#application-contract-and-qualification) using [How to bartlize](../bartl-app/docs/how-to-bartlize.md). [ADR-10](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-10-Kubernetes-fuer-Kundenumgebungen/README.md) selects an application controller for our Kubernetes packages; [ADR-11](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-11-Uebergebbare-Backup-Architektur/README.md) selects Restic and the backup/handover boundary. The application-specific requirements below are the basis for that integration, not evidence that it exists.
 
+The experimental supervisor, scripts, chart and records-reconciliation implementation were retired in `82e4357`. They are not the implementation baseline. Reuse the demonstrated native behavior and its exact-version evidence, not the retired architecture.
+
+Use published Bartlized Keycloak 0.5.1 and Bartlized Restic 0.2.1 as the initial integration baseline. [Keycloak's published-package verification](../bartl-keycloak/DESIGN.md#qualified-package-and-scope) covers native Restic locking and recovery from an independently copied repository. Paperless integration and combined service recovery remain to be qualified.
+
 ## State boundary
 
 Preserve originals and required versions, metadata, ownership and permissions, users/groups, and used workflows/configuration. Retain external settings, secrets and evidence of relevant later records decisions independently. Native import rebuilds search; API tokens are reacquired. Keep native export defaults rather than adding custom filtering to remove harmless extra state. Never discard a rendition under hold.
@@ -12,10 +16,18 @@ Preserve originals and required versions, metadata, ownership and permissions, u
 
 The qualified native path uses Paperless 3.3.1, PostgreSQL 17.6, Redis and Restic on Debian 13. Upstream `/init` and s6 retain process supervision and ordering.
 
+The proof used one writer, completed ingestion, no active, reserved or scheduled tasks, and empty broker queues before capture. It establishes settled-work recovery on the recorded versions, not recovery of interrupted ingestion. Preserve this distinction when choosing the supported package configuration.
+
 ```sh
 document_exporter /capture/paperless
 document_importer /restore/paperless
 ```
+
+### Backup service interface
+
+Paperless publishes to one configured Restic endpoint. The [backup service](../bartl-restic/README.md#service-and-state-boundary) owns replication and retention; Paperless owns consistent capture, publication verification and reconstruction. Use append-only writer credentials and recovery credentials that permit native lock operations while keeping backup contents read-only. Destructive maintenance credentials do not belong in application workers.
+
+Recovery must also accept a compatible Paperless recovery point copied into an independently initialized repository. Preserve logical application identity and integrity checks, but bind the recovery operation to the selected repository and its full snapshot ID rather than requiring the original repository or snapshot IDs. Use native locking; do not bypass locks or automatically unlock on retry. The [Restic replication contract](../bartl-restic/README.md#replication-mechanism) defines copy correspondence and locking.
 
 ### Capture
 
@@ -32,7 +44,7 @@ Scheduled and manual capture must use the same controller-coordinated procedure 
 
 Use native migrations to prepare an empty, same-version installation, then import the complete export. Explicitly check that business documents/users, tokens and document files are absent; native warnings alone do not enforce these prerequisites. Upgrade afterward if a supported path is qualified. PostgreSQL and required native processes may run for preparation, but incomplete import must not admit ordinary writers or external effects.
 
-Import restores document versions, users, object permissions and much application configuration; environment-provided inputs and API tokens must be supplied separately. Each intended restored account reacquires its token through `POST /api/token/`, with independently available authentication inputs and MFA where enabled. Native get-or-create returns an existing token or creates the missing one. Do not rotate profile tokens or grant administrator rights for credential recovery.
+Import restores document versions, users, object permissions and much application configuration; environment-provided inputs must be supplied separately. Native import does not restore API tokens. The proof reacquired them through `POST /api/token/` using restored local password accounts; repeated acquisition returned the existing token. SSO-only accounts and MFA were not exercised. Qualify the supported credential-recovery procedure for the chosen authentication profile without assuming local passwords, rotating profile tokens or granting administrator rights. Token reacquisition is not a prerequisite for ordinary application startup.
 
 ## Startup and failure
 
@@ -40,13 +52,17 @@ Existing owned state follows normal native startup. Observation must cover the a
 
 Paperless's custom-init hook logs failures and continues, so it cannot alone prevent incomplete recovery from serving. An init container cannot wait for its own Pod's database main process. Retain `/init` and s6 rather than introducing another native supervisor.
 
-Paperless import changes several kinds of state; PostgreSQL transactional-restore guarantees do not transfer to it. Failed or ambiguous state-changing work may remain isolated with diagnostics until the failed target is replaced and the ordinary procedure retried. Preserve source and backup history. Do not add a repair or task-replay engine. Controller restart and work completion must preserve stop intent.
+Paperless import changes several kinds of state; PostgreSQL transactional-restore guarantees do not transfer to it. Failed or ambiguous import may remain isolated with diagnostics. Replace the failed target and retry only when the required state remains independently recoverable within the accepted data-loss boundary. Preserve source and backup history; do not add a repair or task-replay engine. Controller restart and work completion must preserve stop intent.
 
-Finite native coordination was approved initially in Bash. A different implementation for those steps needs a concrete limitation and discussion of the alternative, not a generic framework project.
+Helm declares installation configuration and run/stop intent. The application controller owns lifecycle sequencing; finite workers execute the native procedures without independently changing that intent. Choose their implementation from the actual coordination needs, not the retired package's language or architecture.
+
+Supported removal must stop Paperless writers and maintenance work before releasing ownership. Retained database and document storage, together with independently retained configuration and secrets, must remain usable by a subsequent authorized installation without admitting a competing predecessor. Qualify this procedure rather than treating surviving volumes as proof of reinstallability.
 
 ## Source retention
 
 Confirm ingestion completed and the original is readable. Keep the source until a subsequent capture containing it has been independently published and verified, then perform only permitted source-copy cleanup. Paper, email or a device is sufficient if it survives the failure being covered; otherwise use an ordinary durable holding copy, not a new intake service or receipt ledger.
+
+The verified copy containing the ingested original must survive the failure being covered before source-copy cleanup is permitted. Primary publication alone does not establish that condition when the profile also requires a secondary copy. Establish that protection through the backup service's result, not a Paperless replication workflow.
 
 The backup result identifies installation, capture boundary, publication/verification completion, exact Restic point and outcome. Completion after an upload does not prove inclusion if capture began earlier. Check the native inventory and original checksums where uncertain. Unsettled ingestion is not covered; a successful backup does not authorize destruction of legally required originals.
 
@@ -62,9 +78,25 @@ Where evidence is insufficient, keep affected access/processing closed and resol
 
 The native proof restored after deletion of the source VM. It verified original/version bytes and relationships, metadata, ownership and permissions, token reacquisition, browser search, and another backup restored into fresh database, file and Redis storage. Export truncates version `added` timestamps from microseconds to milliseconds. That limit was accepted for the GmbH filing profile; do not patch upstream or use this timestamp alone as document identity or order.
 
-This qualifies the settled-work, same-version native procedure only. Integration still needs the [contract's package evidence](../bartl-app/README.md#supported-configuration-and-catalogue-evidence), especially interrupted capture/import, same-Pod and controller restart, stop during maintenance, failed-publication recovery, supported upgrade and combined SSO/records-release behavior. Qualification checks originals/versions, permissions, token reacquisition and rebuilt search through usable service, not just Job success. Its test accounts do not become routine startup dependencies.
+This qualifies the settled-work, same-version native procedure only. Integration still needs the [contract's package evidence](../bartl-app/README.md#supported-configuration-and-catalogue-evidence). Resolve and exercise these application-specific questions:
 
-The [24 October characterization](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsphilosophie/proof/evidence/2026-10-24-paperless-native.json) recorded queued-work continuation but unresolved active-work interruption; native revoke did not survive replacement. Keep that limit visible without treating it as a requirement for a replay engine. Reuse the completed native proof rather than repeating it for unrelated integration changes. No implementation, build, production deployment or new paid lab is authorized by these results.
+- Capture: how are new submissions excluded, accepted work allowed to settle, and writer termination established? What happens when the drain deadline expires?
+- Interruption: after container or controller restart, can incomplete import remain isolated and intentional stop remain effective without reconstructing ambiguous progress?
+- Publication failure: does a complete capture remain protected for retry while a healthy service resumes only under current running authority?
+- Upgrade: which exact forward transition is supported, and what native import/migration sequence implements it? Same-version recovery is not upgrade evidence.
+- Authentication: which SSO/MFA and API-token paths are supported after recovery, and do permissions still hold?
+- Continued operation: what happens when controller observation is unavailable, and how is stop completion established before replacement takes production authority?
+- Retained state: does supported uninstall/reinstall preserve usable documents, identity and subsequent backup capability?
+
+Qualification checks originals/versions, permissions, supported token reacquisition and rebuilt search through usable service, not just Job success. Exercise combined SSO and the customer records-release procedure before affected service use. Test accounts do not become routine startup dependencies.
+
+The [GmbH operating profile](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsangebot/README.md#gmbh-betriebsprofil) supplies the initial customer's accepted interruption, data-loss and replacement choices, including permitted nightly capture interruption and a stopped source during replacement checks. Maximum capture pause and staging capacity remain to be set there. These are customer choices, not universal package defaults or a zero-downtime requirement.
+
+The [24 October characterization](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsphilosophie/proof/evidence/2026-10-24-paperless-native.json) is historical native-behavior evidence, not a current implementation specification. Its prescriptions for a restricted dispatcher, durable task-denial plans, records reconciliation, custom Redis recovery and multi-store fencing belong to the retired design and are superseded.
+
+Retain the observations: queued work survived replacement in the tested cases; interrupted active work did not settle within the observation window; task revocation did not survive worker replacement. Warm shutdown allowed the tested task to complete but did not independently prove worker/descendant termination. These findings constrain the supported procedure; they do not authorize a replay or reconciliation engine.
+
+Reuse the completed native proof rather than repeating it for unrelated integration changes. No implementation, build, production deployment or new paid lab is authorized by these results.
 
 ## Native sources
 
