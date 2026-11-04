@@ -11,6 +11,7 @@ import ssl
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -357,6 +358,13 @@ def prepare(migration=False):
 def gate():
     with exclusive():
         authority()
+        # Recreate orders upgrades, but not replacement after ordinary Pod deletion.
+        # RWO permits both Pods on this node; a terminating predecessor may still write.
+        selector = urllib.parse.urlencode({'labelSelector':
+            f'paperless.bartl.sh/uid={required("BARTL_UID")},paperless.bartl.sh/role=app'})
+        pods = api(f'/api/v1/namespaces/{required("BARTL_NAMESPACE")}/pods?{selector}')
+        if any(p['metadata']['uid'] != required('BARTL_POD_UID') for p in pods['items']):
+            raise BlockingIOError('Previous application Pod has not retired; retry native admission')
         observed = observe()
         if observed != {'state': 'Existing', 'version': version()}:
             raise RuntimeError('Native startup requires successful current-version preparation')
@@ -489,7 +497,6 @@ def capture(operation, execution, seconds):
             verify_capture(directory)
             current.update(state='Captured', path=str(directory), resumed=False)
             save(STATE / 'capture.json', current)
-            (STATE / 'transition.json').unlink()
             try:
                 authority(execution)
                 s6(True, SERVICES)
@@ -497,6 +504,10 @@ def capture(operation, execution, seconds):
             except Exception as error:
                 current['resumptionError'] = str(error)
             save(STATE / 'capture.json', current)
+            # Startup and controller completion use the same durable boundary.
+            # Failed or interrupted resumption must survive CR removal/reinstall.
+            if current['resumed']:
+                (STATE / 'transition.json').unlink()
         except Exception as error:
             current.update(state='Failed', error=str(error))
             save(STATE / 'capture.json', current)

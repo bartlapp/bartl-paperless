@@ -532,6 +532,34 @@ func (r *Reconciler) stop(ctx context.Context, a *api.PaperlessApplication, dele
 	if len(pods.Items) != 0 {
 		return r.save(ctx, a)
 	}
+	// Fixed-name dependents must be gone before a new CR can acquire these claims.
+	// Otherwise asynchronous GC can make a valid successor look like a foreign owner.
+	for _, obj := range []client.Object{
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "paperless"}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "paperless"}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "paperless-db"}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "paperless-redis"}},
+		&networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: "paperless"}},
+		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "paperless-app"}},
+		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "paperless-db"}},
+		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "paperless-redis"}},
+		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "paperless-job"}},
+	} {
+		obj.SetNamespace(a.Namespace)
+		if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return ctrl.Result{}, err
+		}
+		if !metav1.IsControlledBy(obj, a) {
+			return ctrl.Result{}, fmt.Errorf("foreign resource %T %s prevents finalization", obj, obj.GetName())
+		}
+		if err := r.Delete(ctx, obj, client.PropagationPolicy(metav1.DeletePropagationForeground)); client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, err
+		}
+		return r.save(ctx, a)
+	}
 	claims := a.Spec.Claims
 	if a.Status.Claims != nil {
 		claims = *a.Status.Claims

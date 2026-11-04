@@ -575,3 +575,53 @@ func TestDurableCaptureCompletionSurvivesContainerReplacement(t *testing.T) {
 		t.Fatal("completed original capture was lost or rebound to the replacement execution")
 	}
 }
+
+func TestFinalizationWaitsForFixedResourcesBeforeReleasingClaims(t *testing.T) {
+	a := applicationFixture()
+	now := metav1.Now()
+	a.DeletionTimestamp = &now
+	a.Finalizers = []string{finalizer}
+	claim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+		Name: a.Spec.Claims.Storage, Namespace: a.Namespace,
+		Annotations: map[string]string{ownerAnnotation: string(a.UID)},
+	}}
+	r, ctx := fixture(t, a, claim)
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+		Name: "paperless-db", Namespace: a.Namespace, Finalizers: []string{"test/hold"},
+	}}
+	owner(t, r, a, service)
+	if err := r.Create(ctx, service); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.stop(ctx, a, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(claim), claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.Annotations[ownerAnnotation] != string(a.UID) {
+		t.Fatal("claim released while a fixed-name resource still blocks successor admission")
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(a), a); err != nil {
+		t.Fatal("application finalized before resource cleanup:", err)
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(service), service); err != nil {
+		t.Fatal(err)
+	}
+	if service.DeletionTimestamp == nil {
+		t.Fatal("finalization did not start fixed-resource deletion")
+	}
+	service.Finalizers = nil
+	if err := r.Update(ctx, service); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.stop(ctx, a, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(claim), claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.Annotations[ownerAnnotation] != "" {
+		t.Fatal("claim remained bound after complete finalization")
+	}
+}
