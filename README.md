@@ -1,6 +1,6 @@
 # Bartlized Paperless
 
-Local package 0.1.0 supplies a namespace-local application controller, Helm chart and finite native procedures. Build and import its offline artifacts using the recipe below. Artifact publication and repository integration remain outstanding and require separate authorization.
+Package 0.1.0 supplies a namespace-local application controller, Helm chart and finite native procedures. Its tested artifacts are retained in GHCR, but public access and anonymous installation verification are still pending; release integration remains blocked on that step.
 
 The [Bartl application contract](../bartl-app/README.md#application-contract-and-qualification) and [How to bartlize](../bartl-app/docs/how-to-bartlize.md) own the general behavior and implementation method. [ADR-10](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-10-Kubernetes-fuer-Kundenumgebungen/README.md) selects an application controller; [ADR-11](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-11-Uebergebbare-Backup-Architektur/README.md) owns the backup/handover boundary. The native exporter/importer baseline is the [25 October recovery proof](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsphilosophie/proof/evidence/2026-10-25-paperless-native.json).
 
@@ -18,23 +18,15 @@ Use Traefik in `kube-system` for the supplied ingress policy and an independentl
 
 The supplied route uses Traefik's HTTPS `websecure` entrypoint only. A minimal Django settings extension sets secure session and CSRF cookies, because these Paperless releases expose no native environment switches for those flags. It otherwise imports upstream settings unchanged; do not override `DJANGO_SETTINGS_MODULE`.
 
-### Build and import without publishing
+### Registry package 0.1.0
 
-On a Linux amd64 builder with Podman, Skopeo, Helm 3/4, Mike Farah yq 4 and `sha256sum`:
-
-```sh
-OUT="$PWD/dist" bash build.sh
-```
-
-Choose a fresh output directory. The build creates OCI archives, `bartl-paperless-0.1.0.tgz`, digest-bound `image-values.yaml` and `SHA256SUMS`; it never pushes. The packaged chart, rather than the source chart's local build tags, carries the immutable built image references. Transfer the complete output to independently retained storage. On every target node:
+The chart pins the two Paperless runtimes and controller by immutable digest, alongside the upstream PostgreSQL and Redis digests. The installation recipe uses those registry artifacts without a source checkout/build or manual image import.
 
 ```sh
-sudo bash import.sh k3s
+CHART=oci://ghcr.io/bartlapp/bartl-paperless@sha256:ef2bf48e83bb7b919d85d36d18ad6191373e401c74f03c402e88c749d1601c0d
 ```
 
-The import helper verifies `SHA256SUMS`, imports the archives and registers the exact image digest references carried by the chart. For another containerd installation use `sudo bash import.sh containerd`. Published Restic and Keycloak images/charts must also remain independently obtainable.
-
-The exercised delivery can be retained as a smaller, deduplicated amd64 bundle. After importing the declared images on a Linux node, run `sudo OUT=/new/compact-directory bash compact.sh k3s` from the bundle directory (`containerd` selects plain containerd). Native image export preserves the chart's immutable image identities; gzip compresses only the transport. The resulting directory uses the same `import.sh` command and streams decompression without needing an expanded tar file on the recipient.
+The chart version is `0.1.0`; runtime tags are `3.3.0-0.1.0` and `3.3.1-0.1.0` in `ghcr.io/bartlapp/bartl-paperless-runtime`, and the controller tag is `0.1.0` in `ghcr.io/bartlapp/bartl-paperless-controller`. Use the chart digest above, not a mutable tag, for installation and recovery. Its archive SHA-256 is `dc87e82d5350a4f31850ef801521f836e4567e8ecf81e3a7e319e7935e48dfa8`.
 
 ### Installation inputs
 
@@ -42,8 +34,8 @@ Select the intended kubeconfig/context. Prepare namespace `paperless-blue`, four
 
 ```sh
 NS=paperless-blue
-CHART=/protected/packages/bartl-paperless-0.1.0.tgz
 kubectl config current-context
+kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n "$NS" get pvc paperless-data paperless-db paperless-broker paperless-staging
 kubectl -n "$NS" create secret generic paperless-configuration \
   --from-env-file=/protected/paperless/configuration.env
@@ -263,6 +255,33 @@ The [24 October characterization](../../floriankesslergmbh/floriankesslergmbh/wo
 
 Retain the observations: queued work survived replacement in the tested cases; interrupted active work did not settle within the observation window; task revocation did not survive worker replacement. Warm shutdown allowed the tested task to complete but did not independently prove worker/descendant termination. These findings constrain the supported procedure; they do not authorize a replay or reconciliation engine.
 
+
+## Building and publishing a candidate
+
+Build on a Linux amd64 host with Podman, Skopeo, Helm 3/4, Mike Farah yq 4 and `sha256sum`. Inspect the source/registry access policy and existing versions first; never reuse a published version. Set the selected version in `chart/Chart.yaml`, then build into a fresh directory:
+
+```sh
+OUT=/protected/paperless-candidate
+OUT="$OUT" bash build.sh
+```
+
+The output contains three OCI image directories, a digest-pinned chart, `image-values.yaml`, image digests and `SHA256SUMS`. These are retained build artifacts, not an offline installation product. Qualify that exact chart and those images on the target platform, then publish them from the builder without rebuilding. Keep the original tested candidate until its required artifacts have been durably retained and their identities verified.
+
+After registry login, `REGISTRY_AUTH_FILE` names the protected registry configuration outside Git. Publish only absent version tags:
+
+```sh
+RELEASE=$(yq -r '.version' "$OUT/chart/Chart.yaml")
+skopeo copy --authfile "$REGISTRY_AUTH_FILE" --preserve-digests \
+  "oci:$OUT/paperless-3.3.0" "docker://ghcr.io/bartlapp/bartl-paperless-runtime:3.3.0-$RELEASE"
+skopeo copy --authfile "$REGISTRY_AUTH_FILE" --preserve-digests \
+  "oci:$OUT/paperless-3.3.1" "docker://ghcr.io/bartlapp/bartl-paperless-runtime:3.3.1-$RELEASE"
+skopeo copy --authfile "$REGISTRY_AUTH_FILE" --preserve-digests \
+  "oci:$OUT/paperless-controller" "docker://ghcr.io/bartlapp/bartl-paperless-controller:$RELEASE"
+helm push "$OUT/bartl-paperless-$RELEASE.tgz" oci://ghcr.io/bartlapp \
+  --registry-config "$REGISTRY_AUTH_FILE"
+```
+
+New GHCR packages default to private. Enable public access only for the new release packages, without changing existing package or source-repository access. Verify anonymous acquisition, the chart archive checksum, image manifests and actual running images. Retain immutable identities, exercised results and material limits in the release/integration description; raw logs stay outside Git.
 
 ## Native sources
 
