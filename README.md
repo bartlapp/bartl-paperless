@@ -1,6 +1,6 @@
 # Bartlized Paperless
 
-Package 0.1.0 supplies a namespace-local application controller, Helm chart and finite native procedures. Its tested artifacts are retained in GHCR, but public access and anonymous installation verification are still pending; release integration remains blocked on that step.
+Published release 0.1.0 supplies a namespace-local application controller, Helm chart and finite native procedures. Install its public, digest-pinned GHCR artifacts without a source build or manual image import. The [release description](https://codeberg.org/bartlapp/bartl-paperless/pulls/1) records immutable identities, verified behavior and material limits.
 
 The [Bartl application contract](../bartl-app/README.md#application-contract-and-qualification) and [How to bartlize](../bartl-app/docs/how-to-bartlize.md) own the general behavior and implementation method. [ADR-10](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-10-Kubernetes-fuer-Kundenumgebungen/README.md) selects an application controller; [ADR-11](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-11-Uebergebbare-Backup-Architektur/README.md) owns the backup/handover boundary. The native exporter/importer baseline is the [25 October recovery proof](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsphilosophie/proof/evidence/2026-10-25-paperless-native.json).
 
@@ -18,7 +18,7 @@ Use Traefik in `kube-system` for the supplied ingress policy and an independentl
 
 The supplied route uses Traefik's HTTPS `websecure` entrypoint only. A minimal Django settings extension sets secure session and CSRF cookies, because these Paperless releases expose no native environment switches for those flags. It otherwise imports upstream settings unchanged; do not override `DJANGO_SETTINGS_MODULE`.
 
-### Registry package 0.1.0
+### Published release 0.1.0
 
 The chart pins the two Paperless runtimes and controller by immutable digest, alongside the upstream PostgreSQL and Redis digests. The installation recipe uses those registry artifacts without a source checkout/build or manual image import.
 
