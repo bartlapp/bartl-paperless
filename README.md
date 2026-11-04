@@ -1,12 +1,10 @@
 # Bartlized Paperless
 
-Published release 0.1.0 supplies a namespace-local application controller, Helm chart and finite native procedures. Install its public, digest-pinned GHCR artifacts without a source build or manual image import. The [release description](https://codeberg.org/bartlapp/bartl-paperless/pulls/1) records immutable identities, verified behavior and material limits.
+Release 0.1.0 supplies a namespace-local application controller, Helm chart and finite native procedures. Install the public, digest-pinned GHCR artifacts without a source build or manual image import. The [release description](https://codeberg.org/bartlapp/bartl-paperless/pulls/1) records immutable identities, verified behavior and material limits.
 
-The [Bartl application contract](../bartl-app/README.md#application-contract-and-qualification) and [How to bartlize](../bartl-app/docs/how-to-bartlize.md) own the general behavior and implementation method. [ADR-10](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-10-Kubernetes-fuer-Kundenumgebungen/README.md) selects an application controller; [ADR-11](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-11-Uebergebbare-Backup-Architektur/README.md) owns the backup/handover boundary. The native exporter/importer baseline is the [25 October recovery proof](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsphilosophie/proof/evidence/2026-10-25-paperless-native.json).
+The [Bartl application contract](https://codeberg.org/bartlapp/bartl-app/src/branch/main/docs/application-contract.md#application-contract-and-qualification) owns general behavior; [How to bartlize](../bartl-app/docs/how-to-bartlize.md) owns the implementation method. [ADR-10](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-10-Kubernetes-fuer-Kundenumgebungen/README.md) selects the application controller and [ADR-11](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-11-Uebergebbare-Backup-Architektur/README.md) defines backup/handover requirements.
 
-The experimental supervisor, scripts, chart and records-reconciliation implementation were retired in `82e4357`. This package does not reuse them. `/init`, s6, native migrations, `document_exporter` and `document_importer` retain their upstream responsibilities.
-
-Integration dependencies are published Bartlized Keycloak 0.5.1 and Bartlized Restic 0.2.1. They are installed independently, not embedded as subcharts. Paperless writes to one backup endpoint; the backup service owns replication and retention.
+Install Bartlized Keycloak 0.5.1 and Restic 0.2.1 independently; neither is a subchart. Paperless publishes to one backup endpoint. The backup service owns replication and retention; `/init`, s6, migrations and the native exporter/importer retain their upstream responsibilities.
 
 ## Package and target
 
@@ -20,7 +18,7 @@ The supplied route uses Traefik's HTTPS `websecure` entrypoint only. A minimal D
 
 ### Published release 0.1.0
 
-The chart pins the two Paperless runtimes and controller by immutable digest, alongside the upstream PostgreSQL and Redis digests. The installation recipe uses those registry artifacts without a source checkout/build or manual image import.
+The chart pins both Paperless runtimes, controller, PostgreSQL and Redis by immutable digest:
 
 ```sh
 CHART=oci://ghcr.io/bartlapp/bartl-paperless@sha256:ef2bf48e83bb7b919d85d36d18ad6191373e401c74f03c402e88c749d1601c0d
@@ -102,7 +100,7 @@ kubectl -n "$NS" get paperlessapplication paperless -o json
 
 `--wait=legacy` is Helm 4 syntax; omit `=legacy` with Helm 3. Helm completion means controller infrastructure exists, not that application recovery succeeded. Require both `status.observedGeneration` and the requested condition's `observedGeneration` to equal live `metadata.generation`. `Ready=True` and `status.version` must match the intended release. `Failed=True` retains a refused/interrupted transition; inspect `status.operation`, `status.operations`, Job termination messages and native logs.
 
-The controller starts the owned dependencies, observes database/file state, selects and verifies the latest matching complete point only when local state is absent, prepares/imports on the source version and performs the supported forward migration if needed. Its native gate checks ownership and the actual container execution before `/init` can reach migrations and ordinary services. A replacement waits until every predecessor application Pod, including terminating Pods, is absent; a single-node RWO claim and Deployment `Recreate` alone do not exclude overlap after ordinary Pod deletion. Successful reconstruction needs no second technical release command. Existing state and ordinary container restart do not need backup access.
+The controller starts dependencies and observes database/file state. Only absent local state triggers selection and verification of the latest matching complete backup, same-version preparation/import and any supported forward migration. Before `/init` can reach migrations or ordinary services, the native gate checks ownership and actual container execution. A replacement waits for all predecessor application Pods, including terminating Pods, to disappear; RWO storage and Deployment `Recreate` alone do not prevent overlap after Pod deletion. Recovery needs no second technical release command. Existing state and ordinary restart need no backup access.
 
 ### Capture, publication and retry
 
@@ -115,7 +113,7 @@ kubectl -n "$NS" get paperlessapplication paperless -o json
 
 Wait for `status.backup.request` to equal this request and `status.backup.phase` to become `Published`. Inspect the result's `captureOperation`, `capturedAt`, `resumed`, `repositoryID`, full `snapshotID` and `publishedAt`. `BackupFailed=True` is a failed backup, independently of application `Ready`. Scheduled requests enter this same controller path.
 
-The finite capture stops native admission, waits for one responsive worker with empty active/reserved/scheduled work and broker queues, then stops the worker and checks that UID-1000 writers/descendants have ended. It exports without filtering, inventories every member and resumes only the same currently permitted container execution. Publication uses a separate writer-scoped Job and a read-only staging mount. A candidate snapshot is fully restored and byte-checked before a complete-tag snapshot of the same tree is published.
+Capture stops native admission, drains one responsive worker and its broker queues, then stops writers before an unfiltered export and full member inventory. The native procedure below defines the settled-work boundary and termination checks. Only the same currently permitted execution may resume. A separate writer-scoped Job publishes from read-only staging, restores and byte-checks a candidate, then publishes a complete-tag snapshot of the same tree.
 
 After publication failure, correct the endpoint/credential/capacity problem and issue a new request. The controller retries the retained complete capture rather than silently recapturing; its capture boundary therefore does not advance. Request another backup after successful retry to include later work. Never infer inclusion from publication time.
 
@@ -132,11 +130,11 @@ kubectl -n "$NS" get paperlessapplication paperless -o json
 kubectl -n "$NS" get pods,jobs,deployments,replicasets
 ```
 
-Require current-generation `Stopped=True` and no application/native-Job Pods, including terminating Pods. The controller withdraws its ingress and confirms Deployment/ReplicaSet drainage; PostgreSQL and Redis may remain for diagnosis. Stop cancels finite work and wins over completion. Interrupted mutation remains failed across later run intent. Export needed logs before stopping because drainage removes Jobs and their Pods.
+Require current-generation `Stopped=True` and no application/native-Job Pods, including terminating Pods. The controller withdraws ingress and confirms Deployment/ReplicaSet drainage; PostgreSQL and Redis may remain for diagnosis. Stop cancels finite work and wins over completion. Interrupted mutation stays failed across later run intent. Export needed logs first because drainage deletes Jobs and their Pods.
 
-A running application continues through controller/API observation loss. No lease expiry or recurring custom supervisor stops a healthy service. A new container execution must obtain fresh native admission. While the controller cannot observe or enforce a stop, the old service may continue; a submitted stop request or unreachable source is not confirmed retirement. Do not activate a competing replacement until actual drainage or independent retirement is established.
+A running application continues through controller/API observation loss without lease expiry or a recurring custom supervisor. Each new container execution needs fresh native admission. A submitted stop request or unreachable source is not retirement: while observation/enforcement is unavailable, the old service may continue. Confirm drainage or independent retirement before activating a replacement.
 
-For an ordinary restart after a completed, nonfailed stop, use the same values with `replicas: 1`. For supported uninstall, keep the controller alive until application finalization:
+After a completed, nonfailed stop, restart with the same values and `replicas: 1`. For uninstall, keep the controller alive through application finalization:
 
 ```sh
 kubectl -n "$NS" delete paperlessapplication paperless --wait=true --timeout=10m
@@ -144,9 +142,9 @@ helm uninstall paperless -n "$NS" --wait --timeout=5m
 kubectl -n "$NS" get pvc,secrets
 ```
 
-Do not remove finalizers or delete the namespace/controller first. Finalization drains dependencies and removes the controller-owned fixed-name resources before releasing this CR's claim bindings. Claims, data and operator Secrets survive. Reinstall with the same logical identity, claims and retained inputs and `replicas: 1`; existing-state observation and native startup must succeed before service returns. A failed target's durable transition marker is not cleared by uninstall; preserve diagnostics and independently recoverable state, then use fresh storage rather than deleting markers or replaying import.
+Do not bypass finalizers or delete the namespace/controller first. Finalization drains dependencies, removes controller-owned fixed-name resources and only then releases this CR's claim bindings. Claims, data and operator Secrets survive. Reinstall with the same logical identity, claims and retained inputs and `replicas: 1`; existing-state observation and native startup must succeed. Uninstall does not clear a failed target's durable transition marker. Preserve diagnostics and independently recoverable state, then use fresh storage, not marker deletion or import replay.
 
-For replacement, stop the source and confirm retirement, retain any required final/secondary point, then install with fresh claims, the same logical identity/configuration and the selected surviving repository. Backup selection binds that repository's own full snapshot ID. To upgrade, select `version: "3.3.1"` with the complete installation values; do not roll back the software against migrated data. Helm does not update an existing CRD: apply the selected package's `crds/` before a CRD-changing package upgrade.
+For replacement, confirm source retirement and retain any required final/secondary point, then install on fresh claims with the same logical identity/configuration and the surviving repository. Selection binds that repository's full snapshot ID. Upgrade with `version: "3.3.1"` and complete values; never roll software back against migrated data. Before a CRD-changing upgrade, apply the selected package's `crds/`; Helm does not update an existing CRD.
 
 ### OIDC, MFA and token recovery
 
@@ -173,7 +171,7 @@ Omit `--reset`/`-r`: default `get_or_create` returns an existing token without r
 
 ## State boundary
 
-Preserve originals and required versions, metadata, ownership and permissions, users/groups, and used workflows/configuration. Retain external settings, secrets and evidence of relevant later records decisions independently. Native import rebuilds search; API tokens are reacquired. Keep native export defaults rather than adding custom filtering to remove harmless extra state. Never discard a rendition under hold.
+Preserve originals and required versions, metadata, ownership/permissions, users/groups and used workflows/configuration. Retain external settings, secrets and evidence of later records decisions independently. Native import rebuilds search; reacquire API tokens as above. Keep native export defaults without filtering harmless extra state. Never discard a rendition under hold.
 
 ## Native procedures and failure boundaries
 
@@ -200,11 +198,9 @@ Reconstruction binds the selected repository's own identity and full snapshot ID
 
 ## Source retention
 
-Confirm ingestion completed and the original is readable. Keep the source until a subsequent capture containing it has been independently published and verified, then perform only permitted source-copy cleanup. Paper, email or a device is sufficient if it survives the failure being covered; otherwise use an ordinary durable holding copy, not a new intake service or receipt ledger.
+Confirm completed ingestion and a readable original. Keep its source until a capture containing it has been published, verified and protected against the covered failure. If the profile requires a secondary, primary publication alone is insufficient; use the backup service's result to establish protection. Paper, email or a device suffices if it survives that failure; otherwise retain a durable holding copy, not a new intake service or receipt ledger.
 
-The verified copy containing the ingested original must survive the failure being covered before source-copy cleanup is permitted. Primary publication alone does not establish that condition when the profile also requires a secondary copy. Establish that protection through the backup service's result, not a Paperless replication workflow.
-
-The backup result identifies installation, capture boundary, publication/verification completion, exact Restic point and outcome. Completion after an upload does not prove inclusion if capture began earlier. Check the native inventory and original checksums where uncertain. Unsettled ingestion is not covered; a successful backup does not authorize destruction of legally required originals.
+The result identifies installation, capture boundary, publication/verification completion, exact Restic point and outcome. Publication after upload does not prove inclusion if capture began earlier; check native inventory and original checksums when uncertain. Unsettled ingestion is not covered. Then perform only permitted source-copy cleanup; backup success never authorizes destruction of legally required originals.
 
 After recovery, compare retained sources with the restored library before re-ingesting missing documents. Do not blindly replay or merge records solely because their bytes match.
 
@@ -216,11 +212,11 @@ Where evidence is insufficient, keep affected access/processing closed and resol
 
 ## Qualification scope
 
-The native proof restored after deletion of the source VM. It verified original/version bytes and relationships, metadata, ownership and permissions, token reacquisition, browser search, and another backup restored into fresh database, file and Redis storage. Export truncates version `added` timestamps from microseconds to milliseconds. That limit was accepted for the GmbH filing profile; do not patch upstream or use this timestamp alone as document identity or order.
+The [25 October native recovery proof](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsphilosophie/proof/evidence/2026-10-25-paperless-native.json) restored after source-VM deletion. It checked original/version bytes and relationships, metadata, ownership/permissions, token reacquisition, browser search and a further backup restored into fresh database, file and Redis storage. Export truncates version `added` timestamps from microseconds to milliseconds. The GmbH filing profile accepts that limit; do not patch upstream or use this timestamp alone as identity or order.
 
-The package's supported transition is Paperless 3.3.0 to 3.3.1, using same-version import before native forward migration. The selected authentication profile is Keycloak OIDC with TOTP for an SSO-only user, plus native token acquisition without password assignment, rotation or privilege elevation. Paperless-local MFA is not part of this qualification.
+Package acceptance additionally checks rendition bytes, user/group/object grants, a used metadata-assignment workflow, rebuilt search, new work and another recoverable point. It exercises the supported 3.3.0-to-3.3.1 transition and Keycloak OIDC/TOTP for an SSO-only user, including token acquisition without local password assignment, rotation or elevation. Paperless-local MFA is not qualified.
 
-Package acceptance checks original/version/rendition bytes, metadata, user/group/object grants, a used metadata-assignment workflow, rebuilt search, authentication, new work and another recoverable point. Fault cases cover incomplete import, execution replacement, controller absence, failed publication, bounded drainage, damaged history, persistent stop and retained-storage reuse. The current package lab removes source installations, their physical storage directories and the primary repository on one disposable K3s host. This establishes that failure boundary and independent-repository recovery, not host/provider-loss failover or cross-cluster fencing.
+Fault cases cover incomplete import, execution replacement, controller absence, failed publication, bounded drainage, damaged history, persistent stop and retained-storage reuse. The lab removes source installations, physical storage directories and the primary repository on one disposable K3s host. This qualifies independent-repository recovery at that boundary, not host/provider-loss failover or cross-cluster fencing.
 
 The exercised target was Debian 13, amd64, K3s `v1.36.5+k3s1` with its enforcing CNI and Traefik, cert-manager 1.21.3 and Helm 4.3.0. Builds used Podman 5.4.2. The shared CRD remains installed across namespace removal.
 
@@ -247,14 +243,13 @@ The optional library checker is separate from startup. Use only synthetic docume
 }
 ```
 
-Add all required versions and renditions. A file can specify `actor` and `deniedActors`; a search can specify `actor`. Run `baseline` before capture and `verify` after each transition with the recovered credentials. Browser SSO/MFA and the responsible person's records-release review remain separate usable-service checks. Exact artifact identities, raw-run results and material verification limits belong in the delivery/integration description, not new per-session reports.
+Include all required versions/renditions. Files accept `actor` and `deniedActors`; searches accept `actor`. Run `baseline` before capture and `verify` after each transition with recovered credentials. Browser SSO/MFA and records review remain separate usable-service checks. Record exact artifacts, results and material limits in the delivery/integration description, not session reports.
 
 The [GmbH operating profile](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsangebot/README.md#gmbh-betriebsprofil) supplies the initial customer's accepted interruption, data-loss and replacement choices, including permitted nightly capture interruption and a stopped source during replacement checks. Maximum capture pause and staging capacity remain to be set there. These are customer choices, not universal package defaults or a zero-downtime requirement.
 
-The [24 October characterization](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsphilosophie/proof/evidence/2026-10-24-paperless-native.json) is historical native-behavior evidence, not a current implementation specification. Its prescriptions for a restricted dispatcher, durable task-denial plans, records reconciliation, custom Redis recovery and multi-store fencing belong to the retired design and are superseded.
+The [24 October characterization](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsphilosophie/proof/evidence/2026-10-24-paperless-native.json) remains historical evidence. Its restricted dispatcher, durable task-denial plans, records reconciliation, custom Redis recovery and multi-store fencing prescriptions are superseded; the experimental supervisor, scripts, chart and records-reconciliation code were retired in `82e4357`, not reused here.
 
-Retain the observations: queued work survived replacement in the tested cases; interrupted active work did not settle within the observation window; task revocation did not survive worker replacement. Warm shutdown allowed the tested task to complete but did not independently prove worker/descendant termination. These findings constrain the supported procedure; they do not authorize a replay or reconciliation engine.
-
+Its observations still explain the settled-work boundary: queued work survived tested replacements, but interrupted active work did not settle within the observation window and revocation did not survive worker replacement. Warm shutdown completed the tested task without independently proving writer/descendant termination. These findings constrain capture; they do not authorize replay or reconciliation.
 
 ## Building and publishing a candidate
 
