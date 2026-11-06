@@ -212,7 +212,7 @@ Where evidence is insufficient, keep affected access/processing closed and resol
 
 ## Qualification scope
 
-The [25 October native recovery proof](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsphilosophie/proof/evidence/2026-10-25-paperless-native.json) restored after source-VM deletion. It checked original/version bytes and relationships, metadata, ownership/permissions, token reacquisition, browser search and a further backup restored into fresh database, file and Redis storage. Export truncates version `added` timestamps from microseconds to milliseconds. The GmbH filing profile accepts that limit; do not patch upstream or use this timestamp alone as identity or order.
+Native recovery tests on 25 October 2026 restored after source-VM deletion. They checked original/version bytes and relationships, metadata, ownership/permissions, token reacquisition, browser search and a further backup restored into fresh database, file and Redis storage. Export truncates version `added` timestamps from microseconds to milliseconds. The GmbH filing profile accepts that limit; do not patch upstream or use this timestamp alone as identity or order.
 
 Package acceptance additionally checks rendition bytes, user/group/object grants, a used metadata-assignment workflow, rebuilt search, new work and another recoverable point. It exercises the supported 3.3.0-to-3.3.1 transition and Keycloak OIDC/TOTP for an SSO-only user, including token acquisition without local password assignment, rotation or elevation. Paperless-local MFA is not qualified.
 
@@ -247,9 +247,9 @@ Include all required versions/renditions. Files accept `actor` and `deniedActors
 
 The [GmbH operating profile](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsangebot/README.md#gmbh-betriebsprofil) supplies the initial customer's accepted interruption, data-loss and replacement choices, including permitted nightly capture interruption and a stopped source during replacement checks. Maximum capture pause and staging capacity remain to be set there. These are customer choices, not universal package defaults or a zero-downtime requirement.
 
-The [24 October characterization](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsphilosophie/proof/evidence/2026-10-24-paperless-native.json) remains historical evidence. Its restricted dispatcher, durable task-denial plans, records reconciliation, custom Redis recovery and multi-store fencing prescriptions are superseded; the experimental supervisor, scripts, chart and records-reconciliation code were retired in `82e4357`, not reused here.
+Native-behavior tests on 24 October 2026 explain the settled-work boundary: queued work survived tested replacements, but interrupted active work did not settle within the observation window and revocation did not survive worker replacement. Warm shutdown completed the tested task without independently proving writer/descendant termination. These findings constrain capture; they do not authorize replay or reconciliation.
 
-Its observations still explain the settled-work boundary: queued work survived tested replacements, but interrupted active work did not settle within the observation window and revocation did not survive worker replacement. Warm shutdown completed the tested task without independently proving writer/descendant termination. These findings constrain capture; they do not authorize replay or reconciliation.
+The experimental supervisor, scripts, chart and records-reconciliation code were retired in `82e4357`, not reused here. Their restricted dispatcher, durable task-denial plans, records reconciliation, custom Redis recovery and multi-store fencing prescriptions are superseded.
 
 ## Building and publishing a candidate
 
