@@ -1,8 +1,8 @@
 # Bartlized Paperless
 
-Release 0.1.0 supplies a namespace-local application controller, Helm chart and finite native procedures. Install the public, digest-pinned GHCR artifacts without a source build or manual image import. The [release description](https://codeberg.org/bartlapp/bartl-paperless/pulls/1) records immutable identities, verified behavior and material limits.
+Release 0.1.0 supplies a namespace-local application controller, Helm chart and finite native procedures. Install the public, digest-pinned GHCR artifacts without a source build or manual image import. The [release description](https://github.com/bartlapp/bartl-paperless/releases/tag/v0.1.0) records immutable identities, verified behavior and material limits.
 
-The [Bartl application contract](https://codeberg.org/bartlapp/bartl-app/src/branch/main/docs/application-contract.md#application-contract-and-qualification) owns general behavior. [How to bartlize](https://codeberg.org/bartlapp/bartl-app/src/branch/main/docs/how-to-bartlize.md#kubernetes-operating-packages) explains the Kubernetes application-controller model; the [installation operating guide](https://codeberg.org/bartlapp/bartl-app/src/branch/main/docs/how-to-bartlize.md#operate-and-hand-over-an-installation) owns the human-executed cross-application sequence. The [Restic package](https://codeberg.org/bartlapp/bartl-restic/src/branch/main/README.md#service-and-state-boundary) owns backup storage, replication and retention procedures.
+The [Bartl application contract](https://github.com/bartlapp/bartl-app/blob/main/docs/application-contract.md#application-contract-and-qualification) owns general behavior. [How to bartlize](https://github.com/bartlapp/bartl-app/blob/main/docs/how-to-bartlize.md#kubernetes-operating-packages) explains the Kubernetes application-controller model; the [installation operating guide](https://github.com/bartlapp/bartl-app/blob/main/docs/how-to-bartlize.md#operate-and-hand-over-an-installation) owns the human-executed cross-application sequence. The [Restic package](https://github.com/bartlapp/bartl-restic/blob/main/README.md#service-and-state-boundary) owns backup storage, replication and retention procedures.
 
 Install Bartlized Keycloak 0.5.1 and Restic 0.2.1 independently; neither is a subchart. Paperless publishes to one backup endpoint. The backup service owns replication and retention; `/init`, s6, migrations and the native exporter/importer retain their upstream responsibilities.
 
@@ -28,7 +28,7 @@ The chart version is `0.1.0`; runtime tags are `3.3.0-0.1.0` and `3.3.1-0.1.0` i
 
 ### Installation inputs
 
-Keep the following decisions and effective values in the [customer installation repository](https://codeberg.org/bartlapp/bartl-app/src/branch/main/docs/how-to-bartlize.md#customer-installation-repository), with references to independently protected inputs rather than secrets:
+Keep the following decisions and effective values in the [customer installation repository](https://github.com/bartlapp/bartl-app/blob/main/docs/how-to-bartlize.md#customer-installation-repository), with references to independently protected inputs rather than secrets:
 
 - Exact package artifacts, logical identity, target/storage capabilities, complete Helm values, native configuration and dependency endpoints. Identify who operates Paperless, identity and backup services, and who can authorize replacement and activation.
 - Accepted interruption and data-loss limits, capture schedule and drain budget, recovery-point selection, source retirement and route-switch procedure. Settled-work capture interrupts intake and processing; its drain budget is not a maximum outage guarantee.
@@ -200,11 +200,11 @@ Unambiguous capture completion can be observed after controller outage and ordin
 
 ### Backup service interface
 
-The [backup service](https://codeberg.org/bartlapp/bartl-restic/src/branch/main/README.md#service-and-state-boundary) owns replication and retention. Writer credentials are append-only; recovery credentials can read backup contents and create/remove native lock objects. Neither application worker has destructive maintenance credentials. Do not bypass locks or automatically unlock on retry: first establish that the owning native operation has ended.
+The [backup service](https://github.com/bartlapp/bartl-restic/blob/main/README.md#service-and-state-boundary) owns replication and retention. Writer credentials are append-only; recovery credentials can read backup contents and create/remove native lock objects. Neither application worker has destructive maintenance credentials. Do not bypass locks or automatically unlock on retry: first establish that the owning native operation has ended.
 
 The complete export directory is the recovery artifact, without another tar/zip layer. Its manifest binds logical identity, native version, capture boundary and every member's length/SHA-256. Only a verified `complete`-tag point is eligible; retention must preserve usable complete points rather than count incomplete candidate snapshots as replacements. Lookup uses strict native object enumeration because `restic snapshots --json` can warn about an unreadable object and omit it while returning success.
 
-Reconstruction binds the selected repository's own identity and full snapshot ID. An independently initialized/copied repository need not retain the source repository or snapshot IDs. Logical identity, supported native version and complete inventory integrity remain mandatory. The [replication contract](https://codeberg.org/bartlapp/bartl-restic/src/branch/main/README.md#replication-mechanism) owns copy correspondence. Repository/credential changes during active native work are not a credential-rotation procedure.
+Reconstruction binds the selected repository's own identity and full snapshot ID. An independently initialized/copied repository need not retain the source repository or snapshot IDs. Logical identity, supported native version and complete inventory integrity remain mandatory. The [replication contract](https://github.com/bartlapp/bartl-restic/blob/main/README.md#replication-mechanism) owns copy correspondence. Repository/credential changes during active native work are not a credential-rotation procedure.
 
 
 ## Source retention
@@ -219,7 +219,7 @@ After recovery, compare retained sources with the restored library before re-ing
 
 An export reflects records at capture, not later deletion, hold or restriction decisions. Its restored audit history cannot supply missing later changes. After technical recovery in isolation, the responsible person checks independently surviving approvals, disposal records, correspondence or newer evidence and applies corrections through native administration before affected use resumes. This is a records-policy review, not a second technical startup authorization; it applies neither to ordinary restart nor nightly capture.
 
-Where evidence is insufficient, keep affected access/processing closed and resolve the exception with the installation's named records owner. Review cannot reconstruct missing information. Use the independently surviving decision evidence and review responsibilities recorded in the [customer installation repository](https://codeberg.org/bartlapp/bartl-app/src/branch/main/docs/how-to-bartlize.md#customer-installation-repository); retain the review result and any unresolved restrictions there, with protected evidence referenced as appropriate. Existing approvals, disposal records and correspondence may suffice; a new decision file is justified only by a demonstrated gap.
+Where evidence is insufficient, keep affected access/processing closed and resolve the exception with the installation's named records owner. Review cannot reconstruct missing information. Use the independently surviving decision evidence and review responsibilities recorded in the [customer installation repository](https://github.com/bartlapp/bartl-app/blob/main/docs/how-to-bartlize.md#customer-installation-repository); retain the review result and any unresolved restrictions there, with protected evidence referenced as appropriate. Existing approvals, disposal records and correspondence may suffice; a new decision file is justified only by a demonstrated gap.
 
 ## Qualification scope
 
