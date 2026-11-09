@@ -2,7 +2,7 @@
 
 Release 0.1.0 supplies a namespace-local application controller, Helm chart and finite native procedures. Install the public, digest-pinned GHCR artifacts without a source build or manual image import. The [release description](https://codeberg.org/bartlapp/bartl-paperless/pulls/1) records immutable identities, verified behavior and material limits.
 
-The [Bartl application contract](https://codeberg.org/bartlapp/bartl-app/src/branch/main/docs/application-contract.md#application-contract-and-qualification) owns general behavior; [How to bartlize](../bartl-app/docs/how-to-bartlize.md) owns the implementation method. [ADR-10](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-10-Kubernetes-fuer-Kundenumgebungen/README.md) selects the application controller and [ADR-11](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-11-Uebergebbare-Backup-Architektur/README.md) defines backup/handover requirements.
+The [Bartl application contract](https://codeberg.org/bartlapp/bartl-app/src/branch/main/docs/application-contract.md#application-contract-and-qualification) owns general behavior. [How to bartlize](https://codeberg.org/bartlapp/bartl-app/src/branch/main/docs/how-to-bartlize.md#kubernetes-operating-packages) explains the Kubernetes application-controller model; the [installation operating guide](https://codeberg.org/bartlapp/bartl-app/src/branch/main/docs/how-to-bartlize.md#operate-and-hand-over-an-installation) owns the human-executed cross-application sequence. The [Restic package](https://codeberg.org/bartlapp/bartl-restic/src/branch/main/README.md#service-and-state-boundary) owns backup storage, replication and retention procedures.
 
 Install Bartlized Keycloak 0.5.1 and Restic 0.2.1 independently; neither is a subchart. Paperless publishes to one backup endpoint. The backup service owns replication and retention; `/init`, s6, migrations and the native exporter/importer retain their upstream responsibilities.
 
@@ -27,6 +27,17 @@ CHART=oci://ghcr.io/bartlapp/bartl-paperless@sha256:ef2bf48e83bb7b919d85d36d18ad
 The chart version is `0.1.0`; runtime tags are `3.3.0-0.1.0` and `3.3.1-0.1.0` in `ghcr.io/bartlapp/bartl-paperless-runtime`, and the controller tag is `0.1.0` in `ghcr.io/bartlapp/bartl-paperless-controller`. Use the chart digest above, not a mutable tag, for installation and recovery. Its archive SHA-256 is `dc87e82d5350a4f31850ef801521f836e4567e8ecf81e3a7e319e7935e48dfa8`.
 
 ### Installation inputs
+
+Keep the following decisions and effective values in the [customer installation repository](https://codeberg.org/bartlapp/bartl-app/src/branch/main/docs/how-to-bartlize.md#customer-installation-repository), with references to independently protected inputs rather than secrets:
+
+- Exact package artifacts, logical identity, target/storage capabilities, complete Helm values, native configuration and dependency endpoints. Identify who operates Paperless, identity and backup services, and who can authorize replacement and activation.
+- Accepted interruption and data-loss limits, capture schedule and drain budget, recovery-point selection, source retirement and route-switch procedure. Settled-work capture interrupts intake and processing; its drain budget is not a maximum outage guarantee.
+- Staging capacity, monitoring and cleanup responsibility, retained capture count/size allowance and failure headroom. Captures are not automatically pruned; size staging for retained exports and publication outages rather than assuming one export is enough.
+- Required primary/secondary protection, retention and hold rules, permitted source-copy cleanup, and who confirms protection before cleanup. Independently retain sources or holding copies until the required protection is demonstrated.
+- The records-review owner, required surviving evidence, review timing and authority to reopen affected access after restore. Identify where later deletion, hold and restriction decisions survive independently of the captured library.
+- Useful-service acceptance checks, including restored originals/versions/renditions, permissions, search, OIDC/API access as used, new ingestion and another recoverable backup. Record whether the timestamp-precision limit below is acceptable for the intended records use.
+
+Missing decisions are installation prerequisites, not implied consent to example values. A customer may choose another policy within the supported package boundary; the package does not provide zero-downtime capture, interrupted-ingestion replay or automatic records reconciliation.
 
 Select the intended kubeconfig/context. Prepare namespace `paperless-blue`, four distinct existing claims and protected inputs. Claim names below are examples, not automatically created storage:
 
@@ -189,16 +200,16 @@ Unambiguous capture completion can be observed after controller outage and ordin
 
 ### Backup service interface
 
-The [backup service](../bartl-restic/README.md#service-and-state-boundary) owns replication and retention. Writer credentials are append-only; recovery credentials can read backup contents and create/remove native lock objects. Neither application worker has destructive maintenance credentials. Do not bypass locks or automatically unlock on retry: first establish that the owning native operation has ended.
+The [backup service](https://codeberg.org/bartlapp/bartl-restic/src/branch/main/README.md#service-and-state-boundary) owns replication and retention. Writer credentials are append-only; recovery credentials can read backup contents and create/remove native lock objects. Neither application worker has destructive maintenance credentials. Do not bypass locks or automatically unlock on retry: first establish that the owning native operation has ended.
 
 The complete export directory is the recovery artifact, without another tar/zip layer. Its manifest binds logical identity, native version, capture boundary and every member's length/SHA-256. Only a verified `complete`-tag point is eligible; retention must preserve usable complete points rather than count incomplete candidate snapshots as replacements. Lookup uses strict native object enumeration because `restic snapshots --json` can warn about an unreadable object and omit it while returning success.
 
-Reconstruction binds the selected repository's own identity and full snapshot ID. An independently initialized/copied repository need not retain the source repository or snapshot IDs. Logical identity, supported native version and complete inventory integrity remain mandatory. The [replication contract](../bartl-restic/README.md#replication-mechanism) owns copy correspondence. Repository/credential changes during active native work are not a credential-rotation procedure.
+Reconstruction binds the selected repository's own identity and full snapshot ID. An independently initialized/copied repository need not retain the source repository or snapshot IDs. Logical identity, supported native version and complete inventory integrity remain mandatory. The [replication contract](https://codeberg.org/bartlapp/bartl-restic/src/branch/main/README.md#replication-mechanism) owns copy correspondence. Repository/credential changes during active native work are not a credential-rotation procedure.
 
 
 ## Source retention
 
-Confirm completed ingestion and a readable original. Keep its source until a capture containing it has been published, verified and protected against the covered failure. If the profile requires a secondary, primary publication alone is insufficient; use the backup service's result to establish protection. Paper, email or a device suffices if it survives that failure; otherwise retain a durable holding copy, not a new intake service or receipt ledger.
+Confirm completed ingestion and a readable original. Keep its source until a capture containing it has been published, verified and protected against the failure declared in the customer installation repository. If that protection requires a secondary, primary publication alone is insufficient; use the backup service's result to establish protection. Paper, email or a device suffices if it survives that failure; otherwise retain a durable holding copy, not a new intake service or receipt ledger.
 
 The result identifies installation, capture boundary, publication/verification completion, exact Restic point and outcome. Publication after upload does not prove inclusion if capture began earlier; check native inventory and original checksums when uncertain. Unsettled ingestion is not covered. Then perform only permitted source-copy cleanup; backup success never authorizes destruction of legally required originals.
 
@@ -208,11 +219,11 @@ After recovery, compare retained sources with the restored library before re-ing
 
 An export reflects records at capture, not later deletion, hold or restriction decisions. Its restored audit history cannot supply missing later changes. After technical recovery in isolation, the responsible person checks independently surviving approvals, disposal records, correspondence or newer evidence and applies corrections through native administration before affected use resumes. This is a records-policy review, not a second technical startup authorization; it applies neither to ordinary restart nor nightly capture.
 
-Where evidence is insufficient, keep affected access/processing closed and resolve the exception. Review cannot reconstruct missing information. A new decision file is justified only by a demonstrated gap. The [GmbH records policy](../../floriankesslergmbh/floriankesslergmbh/adr/ADR-2-Toolstack/README.md#adr-29-verwaltung-und-verwahrung-von-dokumenten-und-e-mails) and [operating profile](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsangebot/README.md#gmbh-betriebsprofil) own the customer-specific responsibilities and timing.
+Where evidence is insufficient, keep affected access/processing closed and resolve the exception with the installation's named records owner. Review cannot reconstruct missing information. Use the independently surviving decision evidence and review responsibilities recorded in the [customer installation repository](https://codeberg.org/bartlapp/bartl-app/src/branch/main/docs/how-to-bartlize.md#customer-installation-repository); retain the review result and any unresolved restrictions there, with protected evidence referenced as appropriate. Existing approvals, disposal records and correspondence may suffice; a new decision file is justified only by a demonstrated gap.
 
 ## Qualification scope
 
-Native recovery tests on 25 October 2026 restored after source-VM deletion. They checked original/version bytes and relationships, metadata, ownership/permissions, token reacquisition, browser search and a further backup restored into fresh database, file and Redis storage. Export truncates version `added` timestamps from microseconds to milliseconds. The GmbH filing profile accepts that limit; do not patch upstream or use this timestamp alone as identity or order.
+Native recovery tests on 25 October 2026 restored after source-VM deletion. They checked original/version bytes and relationships, metadata, ownership/permissions, token reacquisition, browser search and a further backup restored into fresh database, file and Redis storage. Export truncates version `added` timestamps from microseconds to milliseconds. This is a package fidelity limit, not a universal records-policy acceptance. The customer must decide whether that precision is sufficient for the intended use before relying on this recovery path; do not use this timestamp alone as identity or order.
 
 Package acceptance additionally checks rendition bytes, user/group/object grants, a used metadata-assignment workflow, rebuilt search, new work and another recoverable point. It exercises the supported 3.3.0-to-3.3.1 transition and Keycloak OIDC/TOTP for an SSO-only user, including token acquisition without local password assignment, rotation or elevation. Paperless-local MFA is not qualified.
 
@@ -245,7 +256,7 @@ The optional library checker is separate from startup. Use only synthetic docume
 
 Include all required versions/renditions. Files accept `actor` and `deniedActors`; searches accept `actor`. Run `baseline` before capture and `verify` after each transition with recovered credentials. Browser SSO/MFA and records review remain separate usable-service checks. Record exact artifacts, results and material limits in the delivery/integration description, not session reports.
 
-The [GmbH operating profile](../../floriankesslergmbh/floriankesslergmbh/workstreams/betriebsangebot/README.md#gmbh-betriebsprofil) supplies the initial customer's accepted interruption, data-loss and replacement choices, including permitted nightly capture interruption and a stopped source during replacement checks. Maximum capture pause and staging capacity remain to be set there. These are customer choices, not universal package defaults or a zero-downtime requirement.
+Installation acceptance records the customer's interruption, data-loss, retention, staging and replacement decisions alongside the exercised useful-service checks. It must account for capture interruption and the time needed for source retirement, recovery, records review and activation. A schedule, drain timeout or passing package test does not establish that the installation meets those accepted limits.
 
 Native-behavior tests on 24 October 2026 explain the settled-work boundary: queued work survived tested replacements, but interrupted active work did not settle within the observation window and revocation did not survive worker replacement. Warm shutdown completed the tested task without independently proving writer/descendant termination. These findings constrain capture; they do not authorize replay or reconciliation.
 
