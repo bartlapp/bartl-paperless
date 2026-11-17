@@ -1,29 +1,38 @@
+{{- if eq .Values.renderMode "deployment" }}
 {{- if ne .Release.Name "paperless" }}
 {{- fail "This package requires release name paperless and one installation per namespace" }}
 {{- end }}
+{{- $service := include "paperless.service" . | fromYaml }}
+{{- $backup := include "paperless.backup" (dict "root" . "service" $service) | fromYaml }}
+{{- $oidc := include "paperless.oidc" (dict "root" . "service" $service) | fromYaml }}
 apiVersion: paperless.bartl.sh/v1alpha1
 kind: PaperlessApplication
 metadata:
   name: paperless
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     app.kubernetes.io/part-of: bartl-paperless
 spec:
   identity:
-    installation: {{ required "identity.installation is required" .Values.identity.installation | quote }}
-    instance: {{ required "identity.instance is required" .Values.identity.instance | quote }}
-  replicas: {{ .Values.replicas }}
-  version: {{ .Values.version | quote }}
+    installation: {{ .Values.installation | quote }}
+    instance: {{ .Values.instance | quote }}
+  replicas: {{ $service.replicas }}
+  version: {{ $service.version | quote }}
   images:
-    {{- toYaml .Values.images | nindent 4 }}
+    {{- toYaml $service.images | nindent 4 }}
   claims:
-    storage: {{ required "claims.storage must name an existing PVC" .Values.claims.storage | quote }}
-    database: {{ required "claims.database must name an existing PVC" .Values.claims.database | quote }}
-    broker: {{ required "claims.broker must name an existing PVC" .Values.claims.broker | quote }}
-    staging: {{ required "claims.staging must name an existing PVC" .Values.claims.staging | quote }}
-  configurationSecret: {{ required "configurationSecret is required" .Values.configurationSecret | quote }}
-  bootstrapSecret: {{ .Values.bootstrapSecret | quote }}
+    {{- toYaml $service.claims | nindent 4 }}
+  configurationSecret: {{ $service.configurationSecret | quote }}
+  bootstrapSecret: {{ $service.bootstrapSecret | quote }}
+  {{- if $backup.enabled }}
   backup:
-    {{- toYaml .Values.backup | nindent 4 }}
+    {{- omit $backup "enabled" "endpoint" | toYaml | nindent 4 }}
+  {{- else }}
+  backup: {}
+  {{- end }}
   ingress:
-    {{- toYaml .Values.ingress | nindent 4 }}
+    enabled: {{ $service.ingress.enabled }}
+    host: {{ $service.hostname | quote }}
+    className: {{ $service.ingress.className | quote }}
+    tlsSecret: {{ $service.ingress.tlsSecret | quote }}
+{{- end }}

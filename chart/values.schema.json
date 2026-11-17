@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "installation",
+    "instance",
+    "renderMode",
+    "services"
+  ],
+  "$comment": "Dynamic selected service and connection bindings are validated against interface.schema.json; unrelated entries are not Paperless inputs.",
+  "properties": {
+    "installation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+    },
+    "instance": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+    },
+    "renderMode": {
+      "type": "string",
+      "enum": [
+        "deployment",
+        "connections",
+        "configuration"
+      ]
+    },
+    "dns": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 239,
+          "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+        }
+      }
+    },
+    "services": {
+      "type": "object"
+    },
+    "identity": false,
+    "ingress": false,
+    "backup": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "repository": false,
+        "readerSecret": false,
+        "writerSecret": false,
+        "schedule": false,
+        "timeZone": false,
+        "drainSeconds": false
+      }
+    },
+    "replicas": false,
+    "version": false,
+    "images": false,
+    "claims": false,
+    "configurationSecret": false,
+    "bootstrapSecret": false,
+    "controller": false
+  }
+}

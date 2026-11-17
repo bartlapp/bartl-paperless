@@ -1,0 +1,91 @@
+{{- if eq .Values.renderMode "connections" }}
+{{- $service := include "paperless.service" . | fromYaml }}
+{{- $backup := $service.backup }}
+{{- $requested := or (hasKey $backup "endpoint") (hasKey $backup "repository") }}
+{{- if hasKey $backup "enabled" }}{{- $requested = $backup.enabled }}{{- end }}
+{{- $oidcEnabled := or (hasKey $service "identityProvider") (hasKey $service.oidc "issuer") }}
+{{- $url := printf "https://%s" $service.hostname }}
+{{- $requirements := dict
+  "configuration" (dict "sources" (list "generated" "external" "recovered") "keys" (list "PAPERLESS_SECRET_KEY" "PAPERLESS_DBPASS" "PAPERLESS_URL") "requiredFor" (list "nativeConfiguration"))
+}}
+{{- $bindings := dict "configuration" (dict "secretName" $service.configurationSecret) }}
+{{- if $service.bootstrapSecret }}
+  {{- $_ := set $requirements "bootstrap" (dict "sources" (list "generated" "external") "keys" (list "PAPERLESS_ADMIN_USER" "PAPERLESS_ADMIN_PASSWORD") "requiredFor" (list "freshInitialization")) }}
+  {{- $_ := set $bindings "bootstrap" (dict "secretName" $service.bootstrapSecret) }}
+{{- end }}
+{{- if $oidcEnabled }}
+  {{- $_ := set $requirements "oidc" (dict "sources" (list "external" "recovered") "keys" (list "clientSecret") "requiredFor" (list "oidcConfiguration")) }}
+  {{- $_ := set $bindings "oidc" (dict "secretName" $service.configurationSecret "key" "PAPERLESS_SOCIALACCOUNT_PROVIDERS" "jsonPath" "openid_connect.APPS[0].secret") }}
+{{- end }}
+{{- if $requested }}
+  {{- range $role, $boundary := dict "backupReader" "recovery" "backupWriter" "capture" }}
+    {{- $_ := set $requirements $role (dict "sources" (list "external" "recovered") "keys" (list "password" "username" "restPassword") "optionalKeys" (list "ca.crt") "requiredFor" (list $boundary)) }}
+  {{- end }}
+  {{- $_ := set $bindings "backupReader" (dict "secretName" $backup.readerSecret) }}
+  {{- $_ := set $bindings "backupWriter" (dict "secretName" $backup.writerSecret) }}
+{{- end }}
+{{- if or $service.ingress.enabled $service.tls.managed }}
+  {{- $sources := list "external" "recovered" }}
+  {{- if $service.tls.managed }}{{- $sources = list "cert-manager" }}{{- end }}
+  {{- $_ := set $requirements "tls" (dict "sources" $sources "keys" (list "tls.crt" "tls.key") "requiredFor" (list "httpsIngress")) }}
+  {{- $_ := set $bindings "tls" (dict "secretName" $service.ingress.tlsSecret) }}
+{{- end }}
+services:
+  {{ .Values.instance | quote }}:
+    endpoints:
+      https:
+        url: {{ $url | quote }}
+        hostname: {{ $service.hostname | quote }}
+        ingressEnabled: {{ $service.ingress.enabled }}
+        ingressClass: {{ $service.ingress.className | quote }}
+        tlsManaged: {{ $service.tls.managed }}
+oidc:
+  requests:
+    {{ .Values.instance | quote }}:
+      enabled: {{ $oidcEnabled }}
+      {{- if $oidcEnabled }}
+      {{- with $service.identityProvider }}
+      provider: {{ . | quote }}
+      {{- end }}
+      {{- with $service.oidc.issuer }}
+      issuer: {{ . | quote }}
+      {{- end }}
+      clientId: {{ $service.oidc.clientId | quote }}
+      providerId: {{ $service.oidc.providerId | quote }}
+      name: {{ $service.oidc.name | quote }}
+      redirectUris:
+        - {{ printf "%s/accounts/oidc/%s/login/callback/" $url $service.oidc.providerId | quote }}
+      webOrigins:
+        - {{ $url | quote }}
+      {{- end }}
+backup:
+  requests:
+    {{ .Values.instance | quote }}:
+      enabled: {{ $requested }}
+      {{- if $requested }}
+      {{- with $backup.endpoint }}
+      endpoint: {{ . | quote }}
+      {{- end }}
+      {{- with $backup.repository }}
+      repository: {{ . | quote }}
+      {{- end }}
+      readerSecret: {{ $backup.readerSecret | quote }}
+      writerSecret: {{ $backup.writerSecret | quote }}
+      {{- end }}
+credentials:
+  requirements:
+    {{ .Values.instance | quote }}:
+      {{- toYaml $requirements | nindent 6 }}
+  bindings:
+    {{ .Values.instance | quote }}:
+      {{- toYaml $bindings | nindent 6 }}
+storage:
+  claims:
+    {{ .Values.instance | quote }}:
+      {{- range $role, $claim := $service.claims }}
+      {{ $role }}:
+        claimName: {{ $claim | quote }}
+        accessModes: [ReadWriteOnce]
+        provisionedBy: operator
+      {{- end }}
+{{- end }}

@@ -1,0 +1,22 @@
+{{- if eq .Values.renderMode "configuration" }}
+{{- $service := include "paperless.service" . | fromYaml }}
+{{- $backup := include "paperless.backup" (dict "root" . "service" $service) | fromYaml }}
+{{- $oidc := include "paperless.oidc" (dict "root" . "service" $service) | fromYaml }}
+{{- $environment := dict "PAPERLESS_URL" (printf "https://%s" $service.hostname) }}
+{{- if $oidc.enabled }}
+  {{- $app := dict "provider_id" $oidc.providerId "name" $oidc.name "client_id" $oidc.clientId "settings" (dict "server_url" $oidc.issuer) }}
+  {{- $native := dict "openid_connect" (dict "SCOPE" (list "openid" "profile" "email") "OAUTH_PKCE_ENABLED" true "APPS" (list $app)) }}
+  {{- $_ := set $environment "PAPERLESS_APPS" "allauth.socialaccount.providers.openid_connect" }}
+  {{- $_ := set $environment "PAPERLESS_SOCIALACCOUNT_PROVIDERS" (mustToJson $native) }}
+{{- end }}
+configuration:
+  {{ .Values.instance | quote }}:
+    secretName: {{ $service.configurationSecret | quote }}
+    environment:
+      {{- toYaml $environment | nindent 6 }}
+    {{- if $oidc.enabled }}
+    oidc:
+      clientSecretRequired: true
+      providerId: {{ $oidc.providerId | quote }}
+    {{- end }}
+{{- end }}

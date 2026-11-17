@@ -49,10 +49,10 @@ export IMAGE_330="${RUNTIME_330%:*}@$DIGEST_330"
 export IMAGE_331="${RUNTIME_331%:*}@$DIGEST_331"
 export IMAGE_CONTROLLER="${CONTROLLER%:*}@$DIGEST_CONTROLLER"
 cp -R chart "$OUT/chart"
-yq -i '.controller.image = strenv(IMAGE_CONTROLLER) | .images.runtime330 = strenv(IMAGE_330) | .images.runtime331 = strenv(IMAGE_331)' "$OUT/chart/values.yaml"
-# The package itself carries the exact built images; this file is also usable
-# as a final image override when installing from the source chart.
-yq '{"controller": {"image": .controller.image}, "images": .images}' "$OUT/chart/values.yaml" > "$OUT/image-values.yaml"
+yq -i '.controller.image = strenv(IMAGE_CONTROLLER) | .images.runtime330 = strenv(IMAGE_330) | .images.runtime331 = strenv(IMAGE_331)' "$OUT/chart/defaults.yaml"
+# The package carries the exact built images for every selected instance.
+# This override file targets the default logical instance paperless.
+yq '{"services": {"paperless": {"controller": {"image": .controller.image}, "images": .images}}}' "$OUT/chart/defaults.yaml" > "$OUT/image-values.yaml"
 helm package "$OUT/chart" --destination "$OUT"
 (cd "$OUT" && sha256sum -- *.tgz *.digest image-values.yaml > SHA256SUMS)
 printf 'Retained release candidate: %s\n' "$OUT"

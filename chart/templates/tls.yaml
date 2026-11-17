@@ -1,0 +1,37 @@
+{{- if eq .Values.renderMode "deployment" }}
+{{- $service := include "paperless.service" . | fromYaml }}
+{{- if $service.tls.managed }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: paperless-letsencrypt
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app.kubernetes.io/part-of: bartl-paperless
+spec:
+  acme:
+    server: {{ $service.tls.acmeServer | quote }}
+    privateKeySecretRef:
+      name: paperless-letsencrypt-account
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: {{ $service.ingress.className | quote }}
+            serviceType: ClusterIP
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $service.ingress.tlsSecret | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app.kubernetes.io/part-of: bartl-paperless
+spec:
+  secretName: {{ $service.ingress.tlsSecret | quote }}
+  dnsNames:
+    - {{ $service.hostname | quote }}
+  issuerRef:
+    name: paperless-letsencrypt
+    kind: Issuer
+{{- end }}
+{{- end }}

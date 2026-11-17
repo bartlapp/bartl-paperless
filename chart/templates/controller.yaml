@@ -1,3 +1,5 @@
+{{- if eq .Values.renderMode "deployment" }}
+{{- $service := include "paperless.service" . | fromYaml }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,8 +28,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: controller
-          image: {{ required "controller.image is required" .Values.controller.image | quote }}
-          imagePullPolicy: {{ .Values.controller.imagePullPolicy }}
+          image: {{ $service.controller.image | quote }}
+          imagePullPolicy: {{ $service.controller.imagePullPolicy }}
           args:
             - --leader-elect=true
             - --metrics-bind-address=0
@@ -59,3 +61,4 @@ spec:
               memory: 64Mi
             limits:
               memory: 256Mi
+{{- end }}

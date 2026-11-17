@@ -1,3 +1,4 @@
+{{- if eq .Values.renderMode "deployment" }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -97,3 +98,4 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: paperless-native
+{{- end }}

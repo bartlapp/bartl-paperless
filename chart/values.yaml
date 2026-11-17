@@ -1,32 +1,4 @@
-controller:
-  image: ghcr.io/bartlapp/bartl-paperless-controller@sha256:ee3df7cdb444318f19f992b68824e1882e031bd02e66051d30ff042b1c61efce
-  imagePullPolicy: IfNotPresent
-identity:
-  installation: ""
-  instance: ""
-replicas: 1
-version: "3.3.1"
-images:
-  runtime330: ghcr.io/bartlapp/bartl-paperless-runtime@sha256:a057da49b9fc95c374e2a4f31d04944d2916367588d62d5b29291113d94a44d6
-  runtime331: ghcr.io/bartlapp/bartl-paperless-runtime@sha256:6680e311a308d7f702d561772db386f964d3e66f9110820fa9c3521463279103
-  postgres: docker.io/library/postgres@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
-  redis: docker.io/library/redis@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621
-claims:
-  storage: ""
-  database: ""
-  broker: ""
-  staging: ""
-configurationSecret: ""
-bootstrapSecret: ""
-backup:
-  repository: ""
-  readerSecret: ""
-  writerSecret: ""
-  schedule: ""
-  timeZone: UTC
-  drainSeconds: 300
-ingress:
-  enabled: false
-  host: ""
-  className: traefik
-  tlsSecret: ""
+# Independent releases consume the same installation values file.
+instance: paperless
+renderMode: deployment
+services: {}

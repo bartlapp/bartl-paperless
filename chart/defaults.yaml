@@ -1,0 +1,33 @@
+replicas: 1
+version: "3.3.1"
+controller:
+  image: ghcr.io/bartlapp/bartl-paperless-controller@sha256:ee3df7cdb444318f19f992b68824e1882e031bd02e66051d30ff042b1c61efce
+  imagePullPolicy: IfNotPresent
+images:
+  runtime330: ghcr.io/bartlapp/bartl-paperless-runtime@sha256:a057da49b9fc95c374e2a4f31d04944d2916367588d62d5b29291113d94a44d6
+  runtime331: ghcr.io/bartlapp/bartl-paperless-runtime@sha256:6680e311a308d7f702d561772db386f964d3e66f9110820fa9c3521463279103
+  postgres: docker.io/library/postgres@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+  redis: docker.io/library/redis@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621
+claims:
+  storage: paperless-data
+  database: paperless-db
+  broker: paperless-broker
+  staging: paperless-staging
+configurationSecret: paperless-configuration
+bootstrapSecret: paperless-bootstrap
+oidc:
+  providerId: keycloak
+  name: Keycloak
+tls:
+  managed: true
+  acmeServer: https://acme-v02.api.letsencrypt.org/directory
+ingress:
+  enabled: true
+  className: traefik
+  tlsSecret: paperless-tls
+backup:
+  readerSecret: paperless-backup-reader
+  writerSecret: paperless-backup-writer
+  schedule: ""
+  timeZone: UTC
+  drainSeconds: 300

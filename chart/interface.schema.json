@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "release": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hostname": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 245,
+          "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+        },
+        "version": {
+          "type": "string",
+          "enum": [
+            "3.3.0",
+            "3.3.1"
+          ]
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "claims": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "storage": {
+              "$ref": "#/definitions/secretName"
+            },
+            "database": {
+              "$ref": "#/definitions/secretName"
+            },
+            "broker": {
+              "$ref": "#/definitions/secretName"
+            },
+            "staging": {
+              "$ref": "#/definitions/secretName"
+            }
+          }
+        },
+        "configurationSecret": {
+          "$ref": "#/definitions/secretName"
+        },
+        "bootstrapSecret": {
+          "$ref": "#/definitions/optionalSecretName"
+        },
+        "identityProvider": {
+          "$ref": "#/definitions/identity"
+        },
+        "oidc": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "issuer": {
+              "type": "string",
+              "pattern": "^https://[^ @?#]+(/[^ ?#]*)?$"
+            },
+            "clientId": {
+              "$ref": "#/definitions/identity"
+            },
+            "providerId": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "managed": {
+              "type": "boolean"
+            },
+            "acmeServer": {
+              "type": "string",
+              "pattern": "^https://[^ ]+$"
+            }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "className": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tlsSecret": {
+              "$ref": "#/definitions/optionalSecretName"
+            }
+          }
+        },
+        "backup": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "endpoint": {
+              "$ref": "#/definitions/identity"
+            },
+            "repository": {
+              "$ref": "#/definitions/repository"
+            },
+            "readerSecret": {
+              "$ref": "#/definitions/secretName"
+            },
+            "writerSecret": {
+              "$ref": "#/definitions/secretName"
+            },
+            "schedule": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "timeZone": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "drainSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            }
+          }
+        },
+        "controller": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": {
+              "type": "string",
+              "minLength": 1
+            },
+            "imagePullPolicy": {
+              "type": "string",
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "images": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runtime330": {
+              "type": "string",
+              "minLength": 1
+            },
+            "runtime331": {
+              "type": "string",
+              "minLength": 1
+            },
+            "postgres": {
+              "type": "string",
+              "minLength": 1
+            },
+            "redis": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "endpoint": {
+          "$ref": "#/definitions/identity"
+        },
+        "repository": {
+          "$ref": "#/definitions/repository"
+        },
+        "readerSecret": {
+          "$ref": "#/definitions/secretName"
+        },
+        "writerSecret": {
+          "$ref": "#/definitions/secretName"
+        }
+      }
+    },
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+    },
+    "secretName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+    },
+    "optionalSecretName": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^rest:https://[^/@?#]+(/[^?#]*)?$"
+    },
+    "oidcBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "$ref": "#/definitions/identity"
+        },
+        "issuer": {
+          "type": "string",
+          "pattern": "^https://[^ @?#]+(/[^ ?#]*)?$"
+        },
+        "clientId": {
+          "$ref": "#/definitions/identity"
+        }
+      },
+      "required": [
+        "provider",
+        "issuer"
+      ]
+    }
+  }
+}
