@@ -118,6 +118,21 @@ check('OIDC provider mismatch, missing issuer and plaintext credential inputs fa
   delete selected(v).identityProvider; delete v.resolved; selected(v).oidc = {}; rejects(v, {mode: 'connections'});
   selected(v).oidc = {issuer: 'https://issuer.example', secret: 'plaintext'}; rejects(v);
 });
+check('backup eligibility does not activate an unbound deployment and explicit opt-out wins', () => {
+  const v = base();
+  const eligible = declaration(v);
+  assert.equal(eligible.backup.requests.paperless.enabled, true);
+  assert.equal(eligible.backup.requests.paperless.repository, undefined);
+  assert.deepEqual(eligible.credentials.requirements.paperless.backupReader.keys, ['password', 'username', 'restPassword']);
+  assert.deepEqual(deployment(v).spec.backup, {});
+  selected(v).backup = {enabled: false};
+  v.resolved = {backup: {bindings: {paperless: {repository: 'rest:https://old.example/paperless/'}}}};
+  const disabled = declaration(v);
+  assert.deepEqual(disabled.backup.requests.paperless, {enabled: false});
+  assert.equal(disabled.credentials.bindings.paperless.backupReader, undefined);
+  assert.equal(disabled.credentials.requirements.paperless.backupWriter, undefined);
+  assert.deepEqual(deployment(v).spec.backup, {});
+});
 check('external and resolved backup map unchanged controller API and disabled backup is empty', () => {
   const v = base(); selected(v).backup = {repository: 'rest:https://backup.example/paperless/', schedule: '0 3 * * *', timeZone: 'Europe/Berlin', drainSeconds: 600};
   let backup = deployment(v).spec.backup;

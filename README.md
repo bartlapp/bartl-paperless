@@ -96,6 +96,8 @@ The declaration reports HTTPS access, OIDC consumer/client/callback requirements
 
 Public paths are `services.<instance>.endpoints.https.{url,hostname,ingressClass,tlsManaged}`, `oidc.requests.<instance>.{enabled,provider,issuer,clientId,providerId,name,redirectUris,webOrigins}`, `backup.requests.<instance>`, `credentials.{requirements,bindings}.<instance>` and `storage.claims.<instance>.<role>.claimName`. Composition declares `provider`; standalone OIDC declares its `issuer` directly. Secret keys and credential sources travel with the chart.
 
+Unreleased source correction: `backup.requests.<instance>.enabled` consistently means eligibility for connection preparation: omission is eligible, explicit `backup.enabled: false` opts out. Conditional reader/writer requirements describe what a selected backup needs, not credentials to create for an unbound application. Standalone deployment without a destination still has no backup; `enabled: true` in service choices requires a destination. Released 0.2.0 declares an omitted choice ineligible; the correction needs a new chart release and is not covered by that release's qualification.
+
 ```bash
 PAPERLESS_URL=$(INSTANCE="$INSTANCE" yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/paperless-connections.yaml")
 PAPERLESS_HOST=$(INSTANCE="$INSTANCE" yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/paperless-connections.yaml")

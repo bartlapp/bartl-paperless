@@ -1,7 +1,7 @@
 {{- if eq .Values.renderMode "connections" }}
 {{- $service := include "paperless.service" . | fromYaml }}
 {{- $backup := $service.backup }}
-{{- $requested := or (hasKey $backup "endpoint") (hasKey $backup "repository") }}
+{{- $requested := true }}
 {{- if hasKey $backup "enabled" }}{{- $requested = $backup.enabled }}{{- end }}
 {{- $oidcEnabled := or (hasKey $service "identityProvider") (hasKey $service.oidc "issuer") }}
 {{- $url := printf "https://%s" $service.hostname }}
