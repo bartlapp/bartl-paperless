@@ -18,21 +18,21 @@ The supplied route uses Traefik's HTTPS `websecure` entrypoint only. A minimal D
 
 ### Obtain release 0.2.0
 
-Use workstation Bash, Helm 4.3.0, kubectl compatible with the target, Mike Farah yq v4, jq, curl, OpenSSL 3, dig and shasum. Keep shell tracing off. Start in a new working directory; the public chart and digest-pinned images need no registry login or source checkout:
+Use workstation Bash, Helm 4.3.0, kubectl compatible with the target, Mike Farah yq v4, jq, curl, OpenSSL 3, dig and shasum. Keep shell tracing off. Reuse the installation's exported absolute `VALUES` and `WORK_DIR` in every package terminal. For a new installation only, the defaults below create its one shared file; the public artifacts need no registry login or source checkout:
 
 ```bash
 set -euo pipefail
 umask 077
-mkdir bartl-paperless
-cd bartl-paperless
-helm pull oci://ghcr.io/bartlapp/bartl-paperless --version 0.2.0
-printf '%s  bartl-paperless-0.2.0.tgz\n' \
-  4c6df6106efb35b2c4a25e4bb77d7ad98765572154dbcd380a9742f20bfac5c9 > SHA256SUMS
-shasum -a 256 --check SHA256SUMS
-CHART="$PWD/bartl-paperless-0.2.0.tgz"
+INSTALLATION_ID=${INSTALLATION_ID:-acme}
+WORK_DIR=${WORK_DIR:-"$HOME/bartl/$INSTALLATION_ID"}
+mkdir -p "$WORK_DIR"
+WORK_DIR=$(cd "$WORK_DIR" && pwd -P)
+export WORK_DIR VALUES="${VALUES:-$WORK_DIR/installation.yaml}"
+case "$VALUES" in /*) ;; *) printf 'VALUES must be absolute\n' >&2; exit 1 ;; esac
+mkdir -p "$WORK_DIR/packages"
 ```
 
-Retain the archive and checksum file outside the target's failure domain. The checksum above binds the chart bytes; its immutable OCI manifest is recorded with the release. The source/release-record repository may require access, but obtaining the public GHCR chart and images does not. Release 0.2.0 changes the chart only: it reuses immutable 0.1.0 controller/runtime image digests instead of rebuilding them under new tags.
+Retain the selected archive and the expected `packages.<package>.chartSha256` in `installation.yaml` outside the target's failure domain. The selection block below acquires and verifies that archive; its immutable OCI manifest is recorded with the release. The source/release-record repository may require access, but obtaining the public GHCR chart and images does not. Release 0.2.0 changes the chart only: it reuses immutable 0.1.0 controller/runtime image digests instead of rebuilding them under new tags.
 
 For the historical upgrade baseline, retain chart 0.1.0 separately: OCI `oci://ghcr.io/bartlapp/bartl-paperless@sha256:ef2bf48e83bb7b919d85d36d18ad6191373e401c74f03c402e88c749d1601c0d`, archive SHA-256 `dc87e82d5350a4f31850ef801521f836e4567e8ecf81e3a7e319e7935e48dfa8`. Its flat values interface is historical, not accepted by 0.2.0.
 
@@ -54,30 +54,68 @@ Missing decisions are installation prerequisites, not implied consent to example
 The [base-k3s recipe](https://github.com/bartlapp/base-k3s/blob/main/README.md#what-this-recipe-delivers), completed through its handover checks, supplies the supported single-node base. Retain its absolute exported `KUBECONFIG` in every terminal. Any equivalent cluster meeting the prerequisites above suffices. Confirm available disk/memory and expected reconstruction/staging capacity before deployment; a default StorageClass does not establish capacity.
 
 ```bash
-CTX=$(kubectl config current-context)
-kubectl --context "$CTX" get nodes
-kubectl --context "$CTX" get storageclass
-NS=paperless-blue
-INSTANCE=paperless
-INSTALL_DIR="$PWD/installation"
+test -f "$VALUES" || printf '{}\n' > "$VALUES"
+INSTALLATION_ID="$INSTALLATION_ID" WORK_DIR="$WORK_DIR" yq -i '
+  .installation = (.installation // strenv(INSTALLATION_ID)) |
+  .dns.root = (.dns.root // "acme.fke.systems") |
+  .services.paperless.release = (.services.paperless.release // "0.2.0") |
+  .packages.paperless = (.packages.paperless // {
+    "version": "0.2.0", "chart": "oci://ghcr.io/bartlapp/bartl-paperless",
+    "chartSha256": "4c6df6106efb35b2c4a25e4bb77d7ad98765572154dbcd380a9742f20bfac5c9"}) |
+  .deployments.paperless = (.deployments.paperless // {
+    "instance": "paperless", "cluster": "blue", "namespace": "paperless-blue",
+    "release": "paperless", "package": "paperless"})
+' "$VALUES"
+```
+
+Retain the target context in `clusters.<cluster>.kubeconfig.context` using base handover or an equivalent cluster. Supply protected `KUBECONFIG` or use the cluster-derived local file; do not store a workstation path in inventory or substitute the terminal's current context on resume:
+
+```bash
+DEPLOYMENT=${DEPLOYMENT:-paperless}
+INSTANCE=$(DEPLOYMENT="$DEPLOYMENT" yq -er '.deployments[strenv(DEPLOYMENT)].instance' "$VALUES")
+HELM_INSTANCE=${INSTANCE//./\\.}
+CLUSTER=$(DEPLOYMENT="$DEPLOYMENT" yq -er '.deployments[strenv(DEPLOYMENT)].cluster' "$VALUES")
+NS=$(DEPLOYMENT="$DEPLOYMENT" yq -er '.deployments[strenv(DEPLOYMENT)].namespace' "$VALUES")
+RELEASE=$(DEPLOYMENT="$DEPLOYMENT" yq -er '.deployments[strenv(DEPLOYMENT)].release' "$VALUES")
+PACKAGE=$(DEPLOYMENT="$DEPLOYMENT" yq -er '.deployments[strenv(DEPLOYMENT)].package' "$VALUES")
+if [ -z "${ACCESS_CLUSTER:-}" ]; then
+  ACCESS_CLUSTER="$CLUSTER"
+  ACCESS_FILE=${KUBECONFIG:-}
+fi
+if [ "$CLUSTER" = "$ACCESS_CLUSTER" ] && [ -n "$ACCESS_FILE" ]; then
+  export KUBECONFIG="$ACCESS_FILE"
+else
+  export KUBECONFIG="$WORK_DIR/clusters/$CLUSTER/base/kubeconfig"
+fi
+
+# ACCESS_FILE remains bound to ACCESS_CLUSTER; another target uses its own base file.
+# To supply a different protected access file, set both variables for that cluster.
+CTX=$(CLUSTER="$CLUSTER" yq -er '.clusters[strenv(CLUSTER)].kubeconfig.context' "$VALUES")
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" config view --minify >/dev/null
+VERSION=$(PACKAGE="$PACKAGE" yq -er '.packages[strenv(PACKAGE)].version' "$VALUES")
+CHART="$WORK_DIR/packages/bartl-paperless-$VERSION.tgz"
+CHART_REF=$(PACKAGE="$PACKAGE" yq -er '.packages[strenv(PACKAGE)].chart' "$VALUES")
+CHART_SHA256=$(PACKAGE="$PACKAGE" yq -er '.packages[strenv(PACKAGE)].chartSha256' "$VALUES")
+if [ ! -f "$CHART" ]; then helm pull "$CHART_REF" --version "$VERSION" --destination "$WORK_DIR/packages"; fi
+printf '%s  %s\n' "$CHART_SHA256" "$CHART" | shasum -a 256 --check -
+test "$RELEASE" = paperless # This package owns fixed-name resources.
+INSTALL_DIR="$WORK_DIR/clusters/$CLUSTER/applications/$INSTANCE"
+if [ "$DEPLOYMENT" != "$INSTANCE" ]; then INSTALL_DIR="$INSTALL_DIR/deployments/$DEPLOYMENT"; fi
 mkdir -p "$INSTALL_DIR/protected"
-VALUES="$INSTALL_DIR/installation.yaml"
-kubectl --context "$CTX" create namespace "$NS" --dry-run=client -o yaml |
-  kubectl --context "$CTX" apply -f -
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" get nodes,storageclass
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" create namespace "$NS" --dry-run=client -o yaml |
+  kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" apply -f -
 ```
 
-Create `"$VALUES"` with your stable identity and real DNS root:
+Placement-local intent is retained separately from stable service choices. Derive optional Helm arguments after selecting a deployment and again after changing its ingress intent:
 
-```yaml
-installation: learning-lab
-dns:
-  root: your-domain.example
-services:
-  paperless:
-    release: "0.2.0"
+```bash
+INGRESS=$(DEPLOYMENT="$DEPLOYMENT" yq -r '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled | select(. != null)' "$VALUES")
+HELM_ARGS=()
+if [ -n "$INGRESS" ]; then HELM_ARGS+=(--set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS"); fi
 ```
 
-This derives `paperless.your-domain.example`, version 3.3.1, one replica and the four claim/Secret names used below. Explicit `services.paperless.hostname` overrides the DNS rule; removing it restores derivation. For another logical instance, change its service key and `INSTANCE`, but keep Helm release name `paperless`. `--set-string instance="$INSTANCE"` selects the service; it does not rename a release. The chart refuses a selected `release` differing from its chart version. Shared infrastructure and unrelated services are ignored; selected service fields are strict.
+The DNS root derives the hostname, native version 3.3.1, one replica and the four claim/Secret names used below. Explicit `services.paperless.hostname` overrides the DNS rule; removing it restores derivation. Another logical instance uses its own service key and deployment entry, retaining Helm release `paperless`. `--set-string instance="$INSTANCE"` selects the service; it does not rename a release. The chart refuses a selected `release` differing from its chart version. Shared infrastructure and unrelated services are ignored; selected service fields are strict. Keep protected files independently recoverable; when using a password store, use the store named by `credentials.passStore` and stable `applications/<instance>/...` entries. Supplied protected files remain sufficient; no password store is required.
 
 Advanced controller/image overrides belong inside `services.<instance>`, not at the file root. Keep the supported pinned defaults unless qualifying a deliberate change. Installation and instance identity and claim names are immutable; retain them during reconstruction, independently of namespace, CR UID and PVC annotations.
 
@@ -87,7 +125,7 @@ Declarations are finite, nonsecret, offline output: they neither contact a provi
 
 ```bash
 helm template paperless "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string renderMode=connections \
+  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" "${HELM_ARGS[@]}" --set-string renderMode=connections \
   --show-only templates/connections.yaml > "$INSTALL_DIR/paperless-connections.yaml"
 cat "$INSTALL_DIR/paperless-connections.yaml"
 ```
@@ -108,7 +146,7 @@ For the example defaults, create four distinct operator-owned PVCs. These dispos
 ```bash
 for entry in paperless-data:10Gi paperless-db:5Gi paperless-broker:1Gi paperless-staging:20Gi; do
   name=${entry%:*}; size=${entry#*:}
-  kubectl --context "$CTX" -n "$NS" apply -f - <<EOF
+  kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" apply -f - <<EOF
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -120,21 +158,21 @@ spec:
       storage: $size
 EOF
 done
-kubectl --context "$CTX" -n "$NS" get pvc
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" get pvc
 ```
 
 Override claim names under `services.<instance>.claims.{storage,database,broker,staging}` and create those names instead if required. Never attach a replacement to a live predecessor's storage.
 
 ### HTTPS and optional dependencies
 
-Point the declared HTTPS hostname to your cluster ingress address at your DNS provider. With the base recipe, obtain it using `kubectl --context "$CTX" -n kube-system get service traefik -o wide`; confirm authoritative and public `dig` answers match before expecting ACME. Permit public ports 80/443. Default `tls.managed: true` creates namespace-local `paperless-letsencrypt` Issuer and Certificate using Let's Encrypt production HTTP-01 through Traefik. `services.<instance>.tls.acmeServer` can select staging; staging is not browser-trusted. cert-manager owns renewal.
+Point the declared HTTPS hostname to your cluster ingress address at your DNS provider. With the base recipe, obtain it using `kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n kube-system get service traefik -o wide`; confirm authoritative and public `dig` answers match before expecting ACME. Permit public ports 80/443. Default `tls.managed: true` creates namespace-local `paperless-letsencrypt` Issuer and Certificate using Let's Encrypt production HTTP-01 through Traefik. `services.<instance>.tls.acmeServer` can select staging; staging is not browser-trusted. cert-manager owns renewal.
 
 For external TLS, set `services.<instance>.tls.managed: false` and create the selected `ingress.tlsSecret` (default `paperless-tls`) from independently retained certificate/key:
 
 ```bash
-kubectl --context "$CTX" -n "$NS" create secret tls paperless-tls \
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" create secret tls paperless-tls \
   --cert=/protected/tls/fullchain.pem --key=/protected/tls/key.pem \
-  --dry-run=client -o yaml | kubectl --context "$CTX" apply -f -
+  --dry-run=client -o yaml | kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" apply -f -
 ```
 
 Retain external TLS mode for an existing manually managed Certificate; an upgrade must not silently adopt it. `ingress.enabled: false` withholds routing without disabling managed certificate preparation.
@@ -145,9 +183,9 @@ Retain external TLS mode for an existing manually managed Certificate; an upgrad
 
 ```bash
 for role in reader writer; do
-  kubectl --context "$CTX" -n "$NS" create secret generic "paperless-backup-$role" \
+  kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" create secret generic "paperless-backup-$role" \
     --from-file="$INSTALL_DIR/protected/backup/$role/" --dry-run=client -o yaml |
-    kubectl --context "$CTX" apply -f -
+    kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" apply -f -
 done
 ```
 
@@ -174,26 +212,64 @@ The bootstrap account is used only for an empty installation without a selected 
 
 ### Optional: compose with independently released Keycloak
 
-Skip this section for no OIDC or a compatible external provider. This fresh Keycloak example needs no source checkout or backup service. An existing/recovered provider instead uses its retained configuration and current administrator credentials; do not generate replacements for restored credentials. The [Keycloak README](https://github.com/bartlapp/bartl-keycloak/blob/v0.6.1/README.md) owns its full lifecycle, backup/recovery and administrative limits. Both releases below consume the same absolute `"$VALUES"` file:
+Skip this section for no OIDC or a compatible external provider. This fresh Keycloak example needs no source checkout or backup service. An existing/recovered provider uses its retained deployment configuration and current administrator credentials; never generate replacements for restored credentials. The current [Keycloak operating procedure](https://github.com/bartlapp/bartl-keycloak/blob/main/README.md) owns lifecycle, backup/recovery and administrative limits for its selected immutable release. Select its deployment against this same absolute `"$VALUES"`; do not repeat an older tagged README's working-directory or file-creation example. The fresh composition below uses Keycloak 0.6.1:
 
 ```bash
-helm pull oci://ghcr.io/bartlapp/bartl-keycloak --version 0.6.1
-printf '%s  bartl-keycloak-0.6.1.tgz\n' \
-  7abb55bcefbcde70dc8f29309d508d314a48783547067b529d48617d23c9225a |
-  shasum -a 256 --check -
-KC_CHART="$PWD/bartl-keycloak-0.6.1.tgz"
-KC_NS=keycloak-blue
-KC_INSTANCE=keycloak
-KC_INSTANCE="$KC_INSTANCE" INSTANCE="$INSTANCE" yq -i '
-  .services[strenv(KC_INSTANCE)].release = "0.6.1" |
-  .services[strenv(INSTANCE)].identityProvider = strenv(KC_INSTANCE) |
-  del(.services[strenv(INSTANCE)].oidc.issuer)
+KC_DEPLOYMENT=${KC_DEPLOYMENT:-keycloak}
+KC_DEPLOYMENT="$KC_DEPLOYMENT" CLUSTER="$CLUSTER" INSTANCE="$INSTANCE" yq -i '
+  .packages.keycloak = (.packages.keycloak // {
+    "version": "0.6.1", "chart": "oci://ghcr.io/bartlapp/bartl-keycloak",
+    "chartSha256": "7abb55bcefbcde70dc8f29309d508d314a48783547067b529d48617d23c9225a"}) |
+  .deployments[strenv(KC_DEPLOYMENT)] = (.deployments[strenv(KC_DEPLOYMENT)] // {
+    "instance": "keycloak", "cluster": strenv(CLUSTER),
+    "namespace": "keycloak-blue", "release": "keycloak", "package": "keycloak"}) |
+  .services.keycloak.release = (.services.keycloak.release // "0.6.1")
 ' "$VALUES"
+KC_INSTANCE=$(KC_DEPLOYMENT="$KC_DEPLOYMENT" yq -er '.deployments[strenv(KC_DEPLOYMENT)].instance' "$VALUES")
+KC_CLUSTER=$(KC_DEPLOYMENT="$KC_DEPLOYMENT" yq -er '.deployments[strenv(KC_DEPLOYMENT)].cluster' "$VALUES")
+KC_INSTANCE="$KC_INSTANCE" INSTANCE="$INSTANCE" yq -i '
+  .services[strenv(INSTANCE)].identityProvider = (.services[strenv(INSTANCE)].identityProvider // strenv(KC_INSTANCE))
+' "$VALUES"
+INSTANCE="$INSTANCE" KC_INSTANCE="$KC_INSTANCE" yq -e '
+  .services[strenv(INSTANCE)].identityProvider == strenv(KC_INSTANCE) and
+  .services[strenv(INSTANCE)].oidc.issuer == null
+' "$VALUES" >/dev/null
+KC_NS=$(KC_DEPLOYMENT="$KC_DEPLOYMENT" yq -er '.deployments[strenv(KC_DEPLOYMENT)].namespace' "$VALUES")
+KC_RELEASE=$(KC_DEPLOYMENT="$KC_DEPLOYMENT" yq -er '.deployments[strenv(KC_DEPLOYMENT)].release' "$VALUES")
+KC_PACKAGE=$(KC_DEPLOYMENT="$KC_DEPLOYMENT" yq -er '.deployments[strenv(KC_DEPLOYMENT)].package' "$VALUES")
+KC_CTX=$(CLUSTER="$KC_CLUSTER" yq -er '.clusters[strenv(CLUSTER)].kubeconfig.context' "$VALUES")
+if [ -z "${KC_ACCESS_CLUSTER:-}" ]; then
+  KC_ACCESS_CLUSTER="$KC_CLUSTER"
+  KC_ACCESS_FILE=${KC_KUBECONFIG:-}
+  if [ "$KC_CLUSTER" = "$CLUSTER" ] && [ -z "$KC_ACCESS_FILE" ]; then KC_ACCESS_FILE="$KUBECONFIG"; fi
+fi
+if [ "$KC_CLUSTER" = "$KC_ACCESS_CLUSTER" ] && [ -n "$KC_ACCESS_FILE" ]; then
+  KC_KUBECONFIG="$KC_ACCESS_FILE"
+else
+  KC_KUBECONFIG="$WORK_DIR/clusters/$KC_CLUSTER/base/kubeconfig"
+fi
+KC_VERSION=$(PACKAGE="$KC_PACKAGE" yq -er '.packages[strenv(PACKAGE)].version' "$VALUES")
+KC_CHART="$WORK_DIR/packages/bartl-keycloak-$KC_VERSION.tgz"
+KC_CHART_REF=$(PACKAGE="$KC_PACKAGE" yq -er '.packages[strenv(PACKAGE)].chart' "$VALUES")
+KC_CHART_SHA256=$(PACKAGE="$KC_PACKAGE" yq -er '.packages[strenv(PACKAGE)].chartSha256' "$VALUES")
+if [ ! -f "$KC_CHART" ]; then helm pull "$KC_CHART_REF" --version "$KC_VERSION" --destination "$WORK_DIR/packages"; fi
+printf '%s  %s\n' "$KC_CHART_SHA256" "$KC_CHART" | shasum -a 256 --check -
+test "$KC_RELEASE" = keycloak
+KC_DIR="$WORK_DIR/clusters/$KC_CLUSTER/applications/$KC_INSTANCE"
+if [ "$KC_DEPLOYMENT" != "$KC_INSTANCE" ]; then KC_DIR="$KC_DIR/deployments/$KC_DEPLOYMENT"; fi
+mkdir -p "$KC_DIR"
+KC_HELM_INSTANCE=${KC_INSTANCE//./\\.}
+KC_INTENT_ARGS=()
+for field in replicas:application.replicas ingressEnabled:ingress.enabled maintenance:ingress.maintenance backupSuspend:backup.suspend; do
+  value=$(DEPLOYMENT="$KC_DEPLOYMENT" FIELD="${field%%:*}" yq -r '.operations.deployments[strenv(DEPLOYMENT)][strenv(FIELD)] | select(. != null)' "$VALUES")
+  [ -z "$value" ] || KC_INTENT_ARGS+=(--set "services.$KC_HELM_INSTANCE.${field#*:}=$value")
+done
+kubectl --kubeconfig "$KC_KUBECONFIG" --context "$KC_CTX" config view --minify >/dev/null
 helm template keycloak "$KC_CHART" -n "$KC_NS" -f "$VALUES" \
-  --set-string instance="$KC_INSTANCE" --set-string renderMode=connections \
-  --show-only templates/connections.yaml > "$INSTALL_DIR/keycloak-connections.yaml"
+  --set-string instance="$KC_INSTANCE" --set-string "services.$KC_HELM_INSTANCE.release=$KC_VERSION" "${KC_INTENT_ARGS[@]}" --set-string renderMode=connections \
+  --show-only templates/connections.yaml > "$KC_DIR/keycloak-connections.yaml"
 helm template paperless "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string renderMode=connections \
+  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" "${HELM_ARGS[@]}" --set-string renderMode=connections \
   --show-only templates/connections.yaml > "$INSTALL_DIR/paperless-connections.yaml"
 ```
 
@@ -203,7 +279,7 @@ Declarations work before Keycloak runs and before `resolved` exists. A selected 
 (
   set -euo pipefail
   umask 077
-  KC_PROTECTED="$INSTALL_DIR/protected/keycloak"
+  KC_PROTECTED="$KC_DIR/protected"
   mkdir -p "$KC_PROTECTED/database" "$KC_PROTECTED/database-admin" "$KC_PROTECTED/bootstrap"
   keep_input() {
     local file="$1" fixed="$2"
@@ -240,36 +316,37 @@ Declarations work before Keycloak runs and before `resolved` exists. A selected 
       (set -o noclobber; cat "$KC_PROTECTED/bootstrap/$key" > "$retained")
     fi
   done
-  kubectl --context "$CTX" create namespace "$KC_NS" --dry-run=client -o yaml |
-    kubectl --context "$CTX" apply -f -
+  kubectl --kubeconfig "$KC_KUBECONFIG" --context "$KC_CTX" create namespace "$KC_NS" --dry-run=client -o yaml |
+    kubectl --kubeconfig "$KC_KUBECONFIG" --context "$KC_CTX" apply -f -
   for pair in database:database database-admin:databaseAdmin bootstrap:bootstrapAdmin; do
     directory=${pair%%:*}; role=${pair#*:}
     name=$(KC_INSTANCE="$KC_INSTANCE" ROLE="$role" yq -er \
       '.credentials.bindings[strenv(KC_INSTANCE)][strenv(ROLE)].secretName' \
-      "$INSTALL_DIR/keycloak-connections.yaml")
-    kubectl --context "$CTX" -n "$KC_NS" create secret generic "$name" \
+      "$KC_DIR/keycloak-connections.yaml")
+    kubectl --kubeconfig "$KC_KUBECONFIG" --context "$KC_CTX" -n "$KC_NS" create secret generic "$name" \
       --from-file="$KC_PROTECTED/$directory/" --dry-run=client -o yaml |
-      kubectl --context "$CTX" apply -f -
+      kubectl --kubeconfig "$KC_KUBECONFIG" --context "$KC_CTX" apply -f -
   done
 )
-KC_HOST=$(KC_INSTANCE="$KC_INSTANCE" yq -er '.services[strenv(KC_INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/keycloak-connections.yaml")
+KC_HOST=$(KC_INSTANCE="$KC_INSTANCE" yq -er '.services[strenv(KC_INSTANCE)].endpoints.https.hostname' "$KC_DIR/keycloak-connections.yaml")
 ```
 
 Point `"$KC_HOST"` to the ingress address and verify DNS as for Paperless. The default namespace-local managed certificate uses the same cert-manager/Traefik prerequisites. Retain both sets of protected credentials outside the cluster before relying on either application. Deploy the independent Keycloak release:
 
 ```bash
-helm upgrade --install keycloak "$KC_CHART" --kube-context "$CTX" -n "$KC_NS" \
-  -f "$VALUES" --set-string instance="$KC_INSTANCE" --wait=legacy --timeout=5m
-KC_GENERATION=$(kubectl --context "$CTX" -n "$KC_NS" get keycloakapplication keycloak -o jsonpath='{.metadata.generation}')
-kubectl --context "$CTX" -n "$KC_NS" wait keycloakapplication/keycloak \
+helm upgrade --install "$KC_RELEASE" "$KC_CHART" --kubeconfig "$KC_KUBECONFIG" --kube-context "$KC_CTX" -n "$KC_NS" \
+  -f "$VALUES" --set-string instance="$KC_INSTANCE" --set-string "services.$KC_HELM_INSTANCE.release=$KC_VERSION" \
+  "${KC_INTENT_ARGS[@]}" --wait=legacy --timeout=5m
+KC_GENERATION=$(kubectl --kubeconfig "$KC_KUBECONFIG" --context "$KC_CTX" -n "$KC_NS" get keycloakapplication keycloak -o jsonpath='{.metadata.generation}')
+kubectl --kubeconfig "$KC_KUBECONFIG" --context "$KC_CTX" -n "$KC_NS" wait keycloakapplication/keycloak \
   --for="jsonpath={.status.conditions[?(@.type==\"Ready\")].observedGeneration}=$KC_GENERATION" --timeout=30m
-kubectl --context "$CTX" -n "$KC_NS" wait --for=condition=Ready \
+kubectl --kubeconfig "$KC_KUBECONFIG" --context "$KC_CTX" -n "$KC_NS" wait --for=condition=Ready \
   keycloakapplication/keycloak --timeout=30m
 if KC_INSTANCE="$KC_INSTANCE" yq -e '.services[strenv(KC_INSTANCE)].endpoints.https.tlsManaged' \
-  "$INSTALL_DIR/keycloak-connections.yaml" >/dev/null; then
+  "$KC_DIR/keycloak-connections.yaml" >/dev/null; then
   KC_TLS_SECRET=$(KC_INSTANCE="$KC_INSTANCE" yq -er \
-    '.credentials.bindings[strenv(KC_INSTANCE)].tls.secretName' "$INSTALL_DIR/keycloak-connections.yaml")
-  kubectl --context "$CTX" -n "$KC_NS" wait "certificate/$KC_TLS_SECRET" \
+    '.credentials.bindings[strenv(KC_INSTANCE)].tls.secretName' "$KC_DIR/keycloak-connections.yaml")
+  kubectl --kubeconfig "$KC_KUBECONFIG" --context "$KC_CTX" -n "$KC_NS" wait "certificate/$KC_TLS_SECRET" \
     --for=condition=Ready --timeout=10m
 fi
 ```
@@ -277,8 +354,8 @@ fi
 Check Keycloak's current-generation readiness, certificate readiness and administration console before provisioning the consumer. Connect public declarations without rebuilding the provider issuer or copying data out of an internal CR:
 
 ```bash
-KC_URL=$(KC_INSTANCE="$KC_INSTANCE" yq -er '.services[strenv(KC_INSTANCE)].endpoints.https.url' "$INSTALL_DIR/keycloak-connections.yaml")
-OIDC_ISSUER=$(KC_INSTANCE="$KC_INSTANCE" yq -er '.services[strenv(KC_INSTANCE)].oidc.issuer' "$INSTALL_DIR/keycloak-connections.yaml")
+KC_URL=$(KC_INSTANCE="$KC_INSTANCE" yq -er '.services[strenv(KC_INSTANCE)].endpoints.https.url' "$KC_DIR/keycloak-connections.yaml")
+OIDC_ISSUER=$(KC_INSTANCE="$KC_INSTANCE" yq -er '.services[strenv(KC_INSTANCE)].oidc.issuer' "$KC_DIR/keycloak-connections.yaml")
 OIDC_CLIENT_ID=$(INSTANCE="$INSTANCE" yq -er '.oidc.requests[strenv(INSTANCE)].clientId' "$INSTALL_DIR/paperless-connections.yaml")
 INSTANCE="$INSTANCE" KC_INSTANCE="$KC_INSTANCE" OIDC_ISSUER="$OIDC_ISSUER" \
 OIDC_CLIENT_ID="$OIDC_CLIENT_ID" yq -i '
@@ -388,7 +465,7 @@ This applies equally to no OIDC, standalone external OIDC and composition. Confi
 
 ```bash
 helm template paperless "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string renderMode=configuration \
+  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" "${HELM_ARGS[@]}" --set-string renderMode=configuration \
   --show-only templates/configuration.yaml > "$INSTALL_DIR/configuration.yaml"
 CONFIG_SECRET=$(INSTANCE="$INSTANCE" yq -er '.configuration[strenv(INSTANCE)].secretName' "$INSTALL_DIR/configuration.yaml")
 INSTANCE="$INSTANCE" yq -o=json '.configuration[strenv(INSTANCE)]' \
@@ -415,7 +492,7 @@ INSTANCE="$INSTANCE" yq -o=json '.configuration[strenv(INSTANCE)]' \
     --slurpfile environment "$INSTALL_DIR/protected/environment.json" '{
       apiVersion: "v1", kind: "Secret", type: "Opaque",
       metadata: {name: $name, namespace: $namespace}, stringData: $environment[0]
-    }' | kubectl --context "$CTX" apply -f -
+    }' | kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" apply -f -
   BOOTSTRAP_SECRET=$(INSTANCE="$INSTANCE" yq -r '.credentials.bindings[strenv(INSTANCE)].bootstrap.secretName // ""' "$INSTALL_DIR/paperless-connections.yaml")
   if [ -n "$BOOTSTRAP_SECRET" ]; then
     if [ -e "$INSTALL_DIR/protected/bootstrap-user" ]; then
@@ -423,10 +500,10 @@ INSTANCE="$INSTANCE" yq -o=json '.configuration[strenv(INSTANCE)]' \
     else
       (set -o noclobber; printf '%s' admin > "$INSTALL_DIR/protected/bootstrap-user")
     fi
-    kubectl --context "$CTX" -n "$NS" create secret generic "$BOOTSTRAP_SECRET" \
+    kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" create secret generic "$BOOTSTRAP_SECRET" \
       --from-file=PAPERLESS_ADMIN_USER="$INSTALL_DIR/protected/bootstrap-user" \
       --from-file=PAPERLESS_ADMIN_PASSWORD="$INSTALL_DIR/protected/bootstrap-password" \
-      --dry-run=client -o yaml | kubectl --context "$CTX" apply -f -
+      --dry-run=client -o yaml | kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" apply -f -
   fi
 )
 ```
@@ -439,20 +516,22 @@ Do not print assembled environment, Secret YAML or client secrets. Keep protecte
 After completing configuration preparation above:
 
 ```bash
-helm upgrade --install paperless "$CHART" --kube-context "$CTX" -n "$NS" \
-  -f "$VALUES" --set-string instance="$INSTANCE" --wait=legacy --timeout=5m
-GENERATION=$(kubectl --context "$CTX" -n "$NS" get paperlessapplication paperless -o jsonpath='{.metadata.generation}')
-kubectl --context "$CTX" -n "$NS" wait paperlessapplication/paperless \
+REPLICAS=$(DEPLOYMENT="$DEPLOYMENT" INSTANCE="$INSTANCE" yq -er '.operations.deployments[strenv(DEPLOYMENT)].replicas // .services[strenv(INSTANCE)].replicas // 1' "$VALUES")
+helm upgrade --install "$RELEASE" "$CHART" --kubeconfig "$KUBECONFIG" --kube-context "$CTX" -n "$NS" -f "$VALUES" \
+  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
+  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" "${HELM_ARGS[@]}" --wait=legacy --timeout=5m
+GENERATION=$(kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" get paperlessapplication paperless -o jsonpath='{.metadata.generation}')
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" wait paperlessapplication/paperless \
   --for="jsonpath={.status.observedGeneration}=$GENERATION" --timeout=30m
-kubectl --context "$CTX" -n "$NS" wait paperlessapplication/paperless \
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" wait paperlessapplication/paperless \
   --for="jsonpath={.status.conditions[?(@.type==\"Ready\")].observedGeneration}=$GENERATION" --timeout=30m
-kubectl --context "$CTX" -n "$NS" wait --for=condition=Ready \
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" wait --for=condition=Ready \
   paperlessapplication/paperless --timeout=30m
-kubectl --context "$CTX" -n "$NS" get paperlessapplication paperless -o json
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" get paperlessapplication paperless -o json
 if INSTANCE="$INSTANCE" yq -e '.services[strenv(INSTANCE)].endpoints.https.tlsManaged' \
   "$INSTALL_DIR/paperless-connections.yaml" >/dev/null; then
   TLS_SECRET=$(INSTANCE="$INSTANCE" yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName' "$INSTALL_DIR/paperless-connections.yaml")
-  kubectl --context "$CTX" -n "$NS" wait "certificate/$TLS_SECRET" \
+  kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" wait "certificate/$TLS_SECRET" \
     --for=condition=Ready --timeout=10m
 fi
 if INSTANCE="$INSTANCE" yq -e '.services[strenv(INSTANCE)].endpoints.https.ingressEnabled' \
@@ -469,9 +548,9 @@ The controller starts dependencies and observes database/file state. Only absent
 
 ```sh
 REQUEST="manual-$(date -u +%Y%m%dT%H%M%SZ)"
-kubectl -n "$NS" annotate paperlessapplication paperless \
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" annotate paperlessapplication paperless \
   "paperless.bartl.sh/backup-request=$REQUEST" --overwrite
-kubectl -n "$NS" get paperlessapplication paperless -o json
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" get paperlessapplication paperless -o json
 ```
 
 Wait for `status.backup.request` to equal this request and `status.backup.phase` to become `Published`. Inspect the result's `captureOperation`, `capturedAt`, `resumed`, `repositoryID`, full `snapshotID` and `publishedAt`. `BackupFailed=True` is a failed backup, independently of application `Ready`. Scheduled requests enter this same controller path.
@@ -487,12 +566,14 @@ Local captures are not automatically pruned. Monitor staging capacity, failed/ov
 Keep run/stop intent in the installation's values, not in generated Deployment replica counts:
 
 ```sh
-INSTANCE="$INSTANCE" yq -i '.services[strenv(INSTANCE)].replicas = 0' "$VALUES"
-helm upgrade paperless "$CHART" --kube-context "$CTX" -n "$NS" \
-  -f "$VALUES" --set-string instance="$INSTANCE" --wait=legacy --timeout=5m
-kubectl -n "$NS" wait --for=condition=Stopped paperlessapplication/paperless --timeout=10m
-kubectl -n "$NS" get paperlessapplication paperless -o json
-kubectl -n "$NS" get pods,jobs,deployments,replicasets
+DEPLOYMENT="$DEPLOYMENT" yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 0' "$VALUES"
+REPLICAS=$(DEPLOYMENT="$DEPLOYMENT" yq -er '.operations.deployments[strenv(DEPLOYMENT)].replicas' "$VALUES")
+helm upgrade "$RELEASE" "$CHART" --kubeconfig "$KUBECONFIG" --kube-context "$CTX" -n "$NS" -f "$VALUES" \
+  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
+  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" "${HELM_ARGS[@]}" --wait=legacy --timeout=5m
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" wait --for=condition=Stopped paperlessapplication/paperless --timeout=10m
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" get paperlessapplication paperless -o json
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" get pods,jobs,deployments,replicasets
 ```
 
 Require current-generation `Stopped=True` and no application/native-Job Pods, including terminating Pods. The controller withdraws ingress and confirms Deployment/ReplicaSet drainage; PostgreSQL and Redis may remain for diagnosis. Stop cancels finite work and wins over completion. Interrupted mutation stays failed across later run intent. Export needed logs first because drainage deletes Jobs and their Pods.
@@ -502,31 +583,33 @@ A running application continues through controller/API observation loss without 
 After a completed, nonfailed stop, restart with durable run intent:
 
 ```bash
-INSTANCE="$INSTANCE" yq -i '.services[strenv(INSTANCE)].replicas = 1' "$VALUES"
-helm upgrade paperless "$CHART" --kube-context "$CTX" -n "$NS" \
-  -f "$VALUES" --set-string instance="$INSTANCE" --wait=legacy --timeout=5m
-kubectl --context "$CTX" -n "$NS" wait --for=condition=Ready \
+DEPLOYMENT="$DEPLOYMENT" yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 1' "$VALUES"
+REPLICAS=$(DEPLOYMENT="$DEPLOYMENT" yq -er '.operations.deployments[strenv(DEPLOYMENT)].replicas' "$VALUES")
+helm upgrade "$RELEASE" "$CHART" --kubeconfig "$KUBECONFIG" --kube-context "$CTX" -n "$NS" -f "$VALUES" \
+  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
+  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" "${HELM_ARGS[@]}" --wait=legacy --timeout=5m
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" wait --for=condition=Ready \
   paperlessapplication/paperless --timeout=30m
 ```
 
 For an ordinary native restart, without backup access:
 
 ```bash
-kubectl --context "$CTX" -n "$NS" rollout restart deployment/paperless
-kubectl --context "$CTX" -n "$NS" rollout status deployment/paperless --timeout=10m
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" rollout restart deployment/paperless
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" rollout status deployment/paperless --timeout=10m
 ```
 
 Recheck current-generation readiness and useful service. For uninstall, keep the controller alive through application finalization:
 
 ```sh
-kubectl -n "$NS" delete paperlessapplication paperless --wait=true --timeout=10m
-helm uninstall paperless -n "$NS" --wait --timeout=5m
-kubectl -n "$NS" get pvc,secrets
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" delete paperlessapplication paperless --wait=true --timeout=10m
+helm uninstall "$RELEASE" --kubeconfig "$KUBECONFIG" --kube-context "$CTX" -n "$NS" --wait --timeout=5m
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" get pvc,secrets
 ```
 
 Do not bypass finalizers or delete the namespace/controller first. Finalization drains dependencies, removes controller-owned fixed-name resources and only then releases this CR's claim bindings. Claims, data and operator Secrets survive. Reinstall with the same logical identity, claims and retained inputs and `replicas: 1`; existing-state observation and native startup must succeed. Uninstall does not clear a failed target's durable transition marker. Preserve diagnostics and independently recoverable state, then use fresh storage, not marker deletion or import replay.
 
-For replacement, confirm source retirement and retain any required final/secondary point, then choose a fresh namespace (for example `NS=paperless-green`), repeat the four-PVC and retained-Secret preparation there, and run the same Helm install with the same logical identity and surviving repository. Do not copy source-local state or generate recovery credentials. Recovery selection binds the repository's full snapshot ID. Keep routes isolated until technical checks and the records review below permit activation; DNS switching alone does not retire the predecessor.
+For replacement, confirm source retirement and retain any required final/secondary point. Keep its stopped `operations.deployments.<source>.replicas: 0`; do not change shared `services.<instance>.replicas` to run the target. Add `deployments.paperless-replacement` with the **same instance**, retained package key, target cluster, fresh namespace and release `paperless`. Record target `replicas: 1` and `ingressEnabled: false` under `operations.deployments.paperless-replacement`, select `DEPLOYMENT=paperless-replacement`, then rerun mapping and optional Helm-argument blocks and repeat declaration, four-PVC and retained-Secret preparation. The mapping derives a separate deployment subdirectory whenever deployment ID differs from instance. Use the same absolute `VALUES`; never copy it, generate recovery credentials or copy source-local state. Run the ordinary deployment command above; startup binds the repository's full snapshot ID and reconstructs automatically. After technical checks and records review, record target `ingressEnabled: true`, refresh the Helm arguments, redeploy and perform the authorized route switch. DNS alone never retires the predecessor. Recheck new work and another usable capture before recording acceptance.
 
 For the supported native upgrade, persist `services.<instance>.version: "3.3.1"` in `"$VALUES"` and run the same Helm upgrade with complete values. To exercise 3.3.0-to-3.3.1, install 3.3.0 first, perform useful work and a verified capture, then select 3.3.1. Never roll software back against migrated data. For a 0.1.0 chart upgrade retain its old archive/configuration as evidence, translate every flat value into the selected shared-file service before rendering 0.2.0, and retain the same identity, claims, Secrets and immutable images. Do not pass the old flat file as an additional compatibility layer.
 
@@ -535,7 +618,7 @@ Before a CRD-changing upgrade, extract the selected verified archive and apply i
 ```bash
 mkdir -p "$INSTALL_DIR/selected-chart"
 tar -xzf "$CHART" -C "$INSTALL_DIR/selected-chart"
-kubectl --context "$CTX" apply -f "$INSTALL_DIR/selected-chart/bartl-paperless/crds/"
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" apply -f "$INSTALL_DIR/selected-chart/bartl-paperless/crds/"
 ```
 
 ### OIDC, MFA and token recovery
@@ -548,7 +631,7 @@ Native import excludes DRF API tokens. Local password accounts can reacquire the
 
 ```sh
 # Treat stdout as a secret; do not put it in general logs.
-kubectl -n "$NS" exec deployment/paperless -c paperless -- \
+kubectl --kubeconfig "$KUBECONFIG" --context "$CTX" -n "$NS" exec deployment/paperless -c paperless -- \
   uv run --no-project python manage.py drf_create_token USERNAME
 ```
 
