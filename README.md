@@ -10,7 +10,7 @@ Paperless is an independent release, not a Keycloak or Restic subchart. Compatib
 
 The package contains Paperless 3.3.0 and 3.3.1 runtimes, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1. The supported forward transition is 3.3.0 to 3.3.1, both in place and through same-version import followed by native migration. Downgrades, other Paperless versions and PostgreSQL major upgrades are refused or outside this package's supported configuration.
 
-Use Linux amd64 Kubernetes with enforced NetworkPolicy, Helm 3 or 4, and four operator-owned ReadWriteOnce claims: database, broker, application storage and protected staging. The filesystem must support POSIX permissions, file locks, atomic rename and fsync. Native image setup needs root to arrange owned directories; ordinary Paperless services run as upstream's UID 1000. One namespace contains one release named `paperless`, one logical application and no unrelated workloads. The initial profile has one Paperless container and one Celery worker with one processing thread. The qualified placement is one K3s node with local-path volumes, not HA or multi-node RWO scheduling.
+Use Linux amd64 Kubernetes with enforced NetworkPolicy and four operator-owned ReadWriteOnce claims: database, broker, application storage and protected staging. The operator recipe below uses Helm 4 under the shared workstation requirements. The filesystem must support POSIX permissions, file locks, atomic rename and fsync. Native image setup needs root to arrange owned directories; ordinary Paperless services run as upstream's UID 1000. One namespace contains one release named `paperless`, one logical application and no unrelated workloads. The initial profile has one Paperless container and one Celery worker with one processing thread. The qualified placement is one K3s node with local-path volumes, not HA or multi-node RWO scheduling.
 
 Use Traefik in `kube-system` for the supplied ingress policy. The default TLS path uses cert-manager with a namespace-local ACME Issuer and Certificate; alternatively supply a TLS Secret. The chart does not provision DNS, PVCs or identity/backup services. Retain exact images, chart, effective configuration, Paperless secret key, OIDC client settings and backup keys/reader credentials independently of the source installation. API/browser intake and native metadata-assignment workflows form the supported profile; mail polling, remote OCR/AI, custom scripts and externally effective workflows require separate qualification.
 
@@ -18,7 +18,7 @@ The supplied route uses Traefik's HTTPS `websecure` entrypoint only. A minimal D
 
 ### Obtain release 0.2.0
 
-Use workstation Bash, Helm 4.3.0, kubectl compatible with the target, Mike Farah yq v4, jq, curl, OpenSSL 3, dig and shasum. Keep shell tracing off. Start in a new working directory; the public chart and digest-pinned images need no registry login or source checkout:
+Use the [operator workstation](https://github.com/bartlapp/bartl-app/blob/main/docs/operator-workstation.md) with Bash, Helm 4.x (minimum supported recipe version 4.3.0), kubectl compatible with the target, Mike Farah yq v4, jq, curl, OpenSSL 3, dig and shasum. The workstation guide selects the current installation version; historical qualification retains the version actually exercised. Keep shell tracing off. Start in a new working directory; the public chart and digest-pinned images need no registry login or source checkout:
 
 ```bash
 set -euo pipefail
@@ -459,7 +459,7 @@ if INSTANCE="$INSTANCE" yq -e '.services[strenv(INSTANCE)].endpoints.https.ingre
 fi
 ```
 
-`--wait=legacy` is Helm 4 syntax; omit `=legacy` with Helm 3. Helm completion means controller infrastructure exists, not that application recovery succeeded. Require both `status.observedGeneration` and the requested condition's `observedGeneration` to equal live `metadata.generation`. `Ready=True` and `status.version` must match the intended release. `Failed=True` retains a refused/interrupted transition; inspect `status.operation`, `status.operations`, Job termination messages and native logs.
+`--wait=legacy` is Helm 4 syntax. Helm completion means controller infrastructure exists, not that application recovery succeeded. Require both `status.observedGeneration` and the requested condition's `observedGeneration` to equal live `metadata.generation`. `Ready=True` and `status.version` must match the intended release. `Failed=True` retains a refused/interrupted transition; inspect `status.operation`, `status.operations`, Job termination messages and native logs.
 
 The controller starts dependencies and observes database/file state. Only absent local state triggers selection and verification of the latest matching complete backup, same-version preparation/import and any supported forward migration. Before `/init` can reach migrations or ordinary services, the native gate checks ownership and actual container execution. A replacement waits for all predecessor application Pods, including terminating Pods, to disappear; RWO storage and Deployment `Recreate` alone do not prevent overlap after Pod deletion. Recovery needs no second technical release command. Existing state and ordinary restart need no backup access.
 
