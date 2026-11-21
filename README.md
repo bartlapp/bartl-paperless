@@ -61,7 +61,7 @@ if [ ! -e "$VALUES" ]; then
 fi
 yq -e '.schemaVersion == 1 and (.customer != null) and (.installation != null)' "$VALUES" >/dev/null
 DEPLOYMENT=${DEPLOYMENT:-paperless}
-CLUSTER=${CLUSTER:-blue}
+CLUSTER=${CLUSTER:-cluster-1}
 DEPLOYMENT="$DEPLOYMENT" CLUSTER="$CLUSTER" yq -i '
   .deployments[strenv(DEPLOYMENT)] = ({
     "instance": "paperless", "cluster": strenv(CLUSTER), "namespace": "paperless-blue",
