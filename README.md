@@ -24,6 +24,7 @@ Use the [operator workstation](https://github.com/bartlapp/bartl-app/blob/main/d
 set -euo pipefail
 umask 077
 INSTALLATION_ID=${INSTALLATION_ID:-acme}
+CUSTOMER=${CUSTOMER:-acme}
 WORK_DIR=${WORK_DIR:-"$HOME/bartl/$INSTALLATION_ID"}
 mkdir -p "$WORK_DIR"
 WORK_DIR=$(cd "$WORK_DIR" && pwd -P)
@@ -54,24 +55,32 @@ Missing decisions are installation prerequisites, not implied consent to example
 The [base-k3s recipe](https://github.com/bartlapp/base-k3s/blob/main/README.md#what-this-recipe-delivers), completed through its handover checks, supplies the supported single-node base. Retain its absolute exported `KUBECONFIG` in every terminal. Any equivalent cluster meeting the prerequisites above suffices. Confirm available disk/memory and expected reconstruction/staging capacity before deployment; a default StorageClass does not establish capacity.
 
 ```bash
-test -f "$VALUES" || printf '{}\n' > "$VALUES"
-INSTALLATION_ID="$INSTALLATION_ID" WORK_DIR="$WORK_DIR" yq -i '
-  .installation = (.installation // strenv(INSTALLATION_ID)) |
-  .dns.root = (.dns.root // "acme.fke.systems") |
-  .services.paperless.release = (.services.paperless.release // "0.2.0") |
-  .packages.paperless = (.packages.paperless // {
+if [ ! -e "$VALUES" ]; then
+  CUSTOMER="$CUSTOMER" INSTALLATION_ID="$INSTALLATION_ID" DNS_ROOT="${DNS_ROOT:-acme.fke.systems}" \
+    yq -n '.schemaVersion = 1 | .customer = strenv(CUSTOMER) | .installation = strenv(INSTALLATION_ID) | .dns.root = strenv(DNS_ROOT)' > "$VALUES"
+fi
+yq -e '.schemaVersion == 1 and (.customer != null) and (.installation != null)' "$VALUES" >/dev/null
+DEPLOYMENT=${DEPLOYMENT:-paperless}
+CLUSTER=${CLUSTER:-blue}
+DEPLOYMENT="$DEPLOYMENT" CLUSTER="$CLUSTER" yq -i '
+  .deployments[strenv(DEPLOYMENT)] = ({
+    "instance": "paperless", "cluster": strenv(CLUSTER), "namespace": "paperless-blue",
+    "release": "paperless", "package": "paperless"} * (.deployments[strenv(DEPLOYMENT)] // {})) |
+  .services[.deployments[strenv(DEPLOYMENT)].instance] = ({
+    "release": "0.2.0"
+  } * (.services[.deployments[strenv(DEPLOYMENT)].instance] // {})) |
+  .packages[.deployments[strenv(DEPLOYMENT)].package] = ({
     "version": "0.2.0", "chart": "oci://ghcr.io/bartlapp/bartl-paperless",
-    "chartSha256": "4c6df6106efb35b2c4a25e4bb77d7ad98765572154dbcd380a9742f20bfac5c9"}) |
-  .deployments.paperless = (.deployments.paperless // {
-    "instance": "paperless", "cluster": "blue", "namespace": "paperless-blue",
-    "release": "paperless", "package": "paperless"})
+    "chartSha256": "4c6df6106efb35b2c4a25e4bb77d7ad98765572154dbcd380a9742f20bfac5c9"
+  } * (.packages[.deployments[strenv(DEPLOYMENT)].package] // {}))
 ' "$VALUES"
 ```
 
-Retain the target context in `clusters.<cluster>.kubeconfig.context` using base handover or an equivalent cluster. Supply protected `KUBECONFIG` or use the cluster-derived local file; do not store a workstation path in inventory or substitute the terminal's current context on resume:
+Base retains the complete version-1 resource graph, including `clusters.<cluster>.kubeconfig.context`. For an external target, obtain its authoritative resource description and chosen context from its administrator and retain the complete cluster entry and referenced resources before selecting a deployment. Under the [resource contract](https://github.com/bartlapp/bartl-app/blob/main/docs/how-to-bartlize.md#versioned-resource-contract), self-managed K3s references its VM nodes and their provider bindings; provider-managed EKS references its provider binding and configuration. Use actual management, ownership, provider scope and protected credential references, never inferred values or a context-only cluster. Other Kubernetes implementations need a supported resource description; this package does not provision infrastructure. Unversioned existing records need coordinated resource/consumer migration, not just a version field. New records default `CUSTOMER` to `acme`; existing identity and configuration remain authoritative.
+
+Supply protected `KUBECONFIG` or use the cluster-derived local file; do not store a workstation path in inventory or substitute the terminal's current context on resume:
 
 ```bash
-DEPLOYMENT=${DEPLOYMENT:-paperless}
 INSTANCE=$(DEPLOYMENT="$DEPLOYMENT" yq -er '.deployments[strenv(DEPLOYMENT)].instance' "$VALUES")
 HELM_INSTANCE=${INSTANCE//./\\.}
 CLUSTER=$(DEPLOYMENT="$DEPLOYMENT" yq -er '.deployments[strenv(DEPLOYMENT)].cluster' "$VALUES")
