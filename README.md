@@ -131,12 +131,16 @@ dig @8.8.8.8 +short "$PAPERLESS_HOST" A
 Require authoritative/public answers reaching this ingress before ACME issuance. Default managed TLS uses Let's Encrypt production and cert-manager renewal. For **external TLS only**, set tls.managed: false before rendering and supply the certificate/key covering the declared hostname:
 
 ```bash
-TLS_SECRET=$(yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName' "$INSTALL_DIR/paperless-connections.yaml")
+TLS_SECRET=$(helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
+  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
+  --set "services.$HELM_INSTANCE.ingress.enabled=true" --set-string renderMode=connections \
+  --show-only templates/connections.yaml |
+  yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName')
 kubectl --context "$KUBE_CONTEXT" -n "$NS" create secret tls "$TLS_SECRET" \
   --cert="$INSTALL_DIR/tls/fullchain.pem" --key="$INSTALL_DIR/tls/key.pem"
 ```
 
-Preserve external ownership on subsequent upgrades. Disabling ingress omits access without disabling managed certificate preparation.
+This offline lookup asks for the future route's TLS binding; it does not enable ingress or change VALUES. Preserve external ownership on subsequent upgrades. Disabling ingress omits access without disabling managed certificate preparation.
 
 ## Optional identity and backup
 
@@ -639,10 +643,16 @@ jq -n --arg name "$CONFIG_SECRET" --arg namespace "$NS" \
 Do not create a new bootstrap identity for imported state. For external TLS only, supply its target certificate/key and retain tls.managed: false:
 
 ```bash
-TLS_SECRET=$(yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName' "$INSTALL_DIR/paperless-connections.yaml")
+TLS_SECRET=$(helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
+  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
+  --set "services.$HELM_INSTANCE.ingress.enabled=true" --set-string renderMode=connections \
+  --show-only templates/connections.yaml |
+  yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName')
 kubectl --context "$KUBE_CONTEXT" -n "$NS" create secret tls "$TLS_SECRET" \
   --cert="$INSTALL_DIR/tls/fullchain.pem" --key="$INSTALL_DIR/tls/key.pem"
 ```
+
+Only this offline declaration lookup enables routing in its render inputs, so the chart emits the future TLS binding. The retained recovery ingress intent remains false; no route is applied.
 
 Inspect the target ingress and point the authorized hostname to it. Require authoritative/public DNS and no conflicting AAAA before managed issuance; the application route remains disabled:
 
