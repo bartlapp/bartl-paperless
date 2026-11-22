@@ -24,8 +24,9 @@ umask 077
 export WORK_DIR="$HOME/bartl/acme/acme-installation"
 export VALUES="$WORK_DIR/installation.yaml"
 mkdir -p "$WORK_DIR/packages"
-helm pull oci://ghcr.io/bartlapp/bartl-paperless --version 0.2.0 --destination "$WORK_DIR/packages"
-CHART="$WORK_DIR/packages/bartl-paperless-0.2.0.tgz"
+export VERSION=0.2.0
+helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$VERSION" --destination "$WORK_DIR/packages"
+CHART="$WORK_DIR/packages/bartl-paperless-$VERSION.tgz"
 CHART_SHA256=4c6df6106efb35b2c4a25e4bb77d7ad98765572154dbcd380a9742f20bfac5c9
 printf '%s  %s\n' "$CHART_SHA256" "$CHART" | shasum -a 256 --check -
 ```
@@ -51,7 +52,7 @@ yq -i '
   } |
   .services[strenv(INSTANCE)] = {} |
   .packages[strenv(PACKAGE)] = {
-    "version": "0.2.0", "chart": "oci://ghcr.io/bartlapp/bartl-paperless",
+    "version": strenv(VERSION), "chart": "oci://ghcr.io/bartlapp/bartl-paperless",
     "chartSha256": strenv(CHART_SHA256)
   }
 ' "$VALUES"
@@ -60,26 +61,14 @@ yq -i '
 Optional hostname, claim, native-version, TLS and dependency choices belong under services.<instance>. Omitted hostname derives from dns.root; default native version is 3.3.1. Read access and render declarations:
 
 ```bash
-INSTANCE=$(yq -er '.deployments[strenv(DEPLOYMENT)].instance' "$VALUES")
-CLUSTER_ID=$(yq -er '.deployments[strenv(DEPLOYMENT)].cluster' "$VALUES")
-NS=$(yq -er '.deployments[strenv(DEPLOYMENT)].namespace' "$VALUES")
-RELEASE=$(yq -er '.deployments[strenv(DEPLOYMENT)].release' "$VALUES")
-PACKAGE=$(yq -er '.deployments[strenv(DEPLOYMENT)].package' "$VALUES")
-export INSTANCE CLUSTER_ID PACKAGE
 HELM_INSTANCE=${INSTANCE//./\\.}
 KUBE_CONTEXT=$(yq -er '.clusters[strenv(CLUSTER_ID)].kubeconfig.context' "$VALUES")
 export KUBECONFIG="$WORK_DIR/clusters/$CLUSTER_ID/base/kubeconfig"
 # Replace only with an access file supplied for this selected cluster.
-VERSION=$(yq -er '.packages[strenv(PACKAGE)].version' "$VALUES")
-test "$VERSION" = 0.2.0
-CHART="$WORK_DIR/packages/bartl-paperless-$VERSION.tgz"
-CHART_SHA256=$(yq -er '.packages[strenv(PACKAGE)].chartSha256' "$VALUES")
-printf '%s  %s\n' "$CHART_SHA256" "$CHART" | shasum -a 256 --check -
 INSTALL_DIR="$WORK_DIR/clusters/$CLUSTER_ID/applications/$INSTANCE"
 if [ "$DEPLOYMENT" != "$INSTANCE" ]; then INSTALL_DIR="$INSTALL_DIR/deployments/$DEPLOYMENT"; fi
 mkdir -p "$INSTALL_DIR"
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
+INGRESS=$(yq -r '[.services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --set-string renderMode=connections \
@@ -166,6 +155,8 @@ Register that client at the provider and retain its client secret without a newl
 
 First install/resume and verify Keycloak through its [own release procedure](https://github.com/bartlapp/bartl-keycloak/blob/main/README.md), including DNS, TLS, credentials and useful login. Do not provision it again here. Supply its current nonsecret declaration file from that procedure; 0.6.1 and the current candidate have different deployment interfaces but expose the issuer declaration used below.
 
+Starting condition: this consumer has no direct `oidc.issuer` override; composition selects the provider through `identityProvider`. Supply an authorized current master-realm administrator at `INSTALL_DIR/protected/keycloak-admin/{username,password}`, with usable `admin-cli` password grant and no interactive required actions. These credentials are preparation-only.
+
 ```bash
 export KC_DEPLOYMENT=keycloak
 export KC_CONNECTIONS="$WORK_DIR/clusters/cluster-1/applications/keycloak/connections.yaml"
@@ -187,7 +178,7 @@ yq -i '.resolved.oidc.bindings[strenv(INSTANCE)] = {
 }' "$VALUES"
 ```
 
-Starting condition: no direct oidc.issuer override for this composed consumer. The provider binding must match identityProvider. Refresh it when provider choices change. Supply an authorized current master-realm administrator at INSTALL_DIR/protected/keycloak-admin/{username,password}; admin-cli password grant must be usable without interactive required actions. These are preparation credentials, never Paperless runtime inputs.
+The resolved provider binding must match `identityProvider`. Refresh it when provider choices change.
 
 Authenticate and inspect the provider's realms and the declared client specification:
 
@@ -359,7 +350,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
 
 Require current-generation Ready and status.version matching the intended native version. Helm only waits for controller infrastructure. Startup observes owned state; absence selects the latest complete matching point, same-version import and supported migration. Lookup/integrity/identity failures never mean empty state. Existing-state restart needs no backup access.
 
-Through real HTTPS, log in locally and, when selected, with fresh OIDC/TOTP. Ingest a synthetic PDF, await OCR/processing, search title/text and download the original. Check used versions/renditions, workflow, reader grants and denied access. A read-only browser group needs view_document, view_uisettings, add_uisettings, change_uisettings and view_savedview plus object grants; metadata views may need their corresponding view permissions. These do not grant document modification or user administration.
+Through real HTTPS, log in locally and, when selected, with fresh OIDC/TOTP. Ingest a synthetic PDF, await OCR/processing, search title/text and download the original. Check used versions/renditions, workflow, reader grants and denied access. [OIDC, MFA and token recovery](#oidc-mfa-and-token-recovery) lists the native reader permissions.
 
 ## Resume an existing deployment
 
@@ -477,7 +468,7 @@ Verify current-generation Ready and useful service without backup access. Stop/s
 
 Use this ordered sequence for same-release recovery or the supported 3.3.0 → 3.3.1 replacement. Supply an independent target cluster/namespace, four empty claims, retained Paperless key/client inputs, a usable repository and an authorized recovery point. Source and target share VALUES and logical instance, not storage or deployment intent.
 
-**Before starting**, arrange a target HTTPS path restricted to the named recovery/records-review operators, enforced by the environment without direct-service or alternate-route bypass. Keep production outbound effects isolated. Paperless 0.2.0 has no maintenance allowlist; ingress.enabled alone is not review isolation. Do not open ordinary access until the records review is complete. Source-provider loss additionally needs independently enforceable retirement, including a returning predecessor; DNS/unreachability alone do not provide it.
+The Base profile uses the administrator-only Traefik review route below, while the package's ordinary ingress remains disabled. Supply a reviewer IPv4/CIDR distinguishable from ordinary clients; shared NAT/proxy addresses are unsuitable. Keep production outbound effects isolated and exclude direct-service or alternate-route bypass. Other environments must supply equivalent verified isolation. Source-provider loss also needs independently enforced retirement, including a returning predecessor; DNS/unreachability alone do not provide it.
 
 ### Final capture and source retirement
 
@@ -502,7 +493,14 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless -
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
     any(.status.conditions[]; .type == "Ready" and .status == "True" and .observedGeneration == $g)'
-REQUEST="manual-$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
+Let already admitted capture/publication finish before continuing. With intake still closed, request a fresh capture below. A publication retry can finish an older export; the capture-operation comparison rejects that result as the final capture. If it rejects an otherwise successful publication, keep intake closed and repeat only this capture block to obtain a new export.
+
+```bash
+PREVIOUS_CAPTURE=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json |
+  jq -r '.status.backup.captureOperation // ""')
+REQUEST="final-$(openssl rand -hex 8)"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" annotate paperlessapplication/paperless \
   "paperless.bartl.sh/backup-request=$REQUEST" --overwrite
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
@@ -510,8 +508,10 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
   --for=jsonpath='{.status.backup.phase}'=Published --timeout=6h
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json > "$INSTALL_DIR/backup-result.json"
-jq -e --arg request "$REQUEST" '.status.backup |
-  .request == $request and .phase == "Published" and (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/backup-result.json"
+jq -e --arg request "$REQUEST" --arg previous "$PREVIOUS_CAPTURE" '.status.backup |
+  .request == $request and .phase == "Published" and
+  (.captureOperation | length > 0) and .captureOperation != $previous and
+  (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/backup-result.json"
 ```
 
 Require final capture inclusion and any required secondary protection. Then stop the source and prevent restart:
@@ -691,26 +691,74 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc -o json > "$INSTALL_DIR/targe
 
 Inspect status.operation/status.operations and native Job results. Require the authorized repository/full snapshot, expected native version and independent PVC UIDs/backing volumes. Ready with an empty initialization is not recovery of expected history. Failure stays isolated; preserve diagnostics and use another independent empty target, never clear markers or replay an ambiguous import.
 
-Confirm the prearranged restricted HTTPS path and source retirement, then enable the target route for review operators only:
+For Base's single-node Traefik, preserve the client's source address. This changes the cluster ingress Service, so retain its other settings:
 
 ```bash
-yq -i '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = true' "$VALUES"
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
-helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
+kubectl --context "$KUBE_CONTEXT" -n kube-system get helmchartconfig traefik \
+  --ignore-not-found -o yaml > "$INSTALL_DIR/traefik-config.yaml"
+if [ ! -s "$INSTALL_DIR/traefik-config.yaml" ]; then
+  yq -n '.apiVersion = "helm.cattle.io/v1" | .kind = "HelmChartConfig" |
+    .metadata.name = "traefik" | .metadata.namespace = "kube-system"' > "$INSTALL_DIR/traefik-config.yaml"
+fi
+TRAEFIK_VALUES=$(yq -r '.spec.valuesContent // "{}"' "$INSTALL_DIR/traefik-config.yaml" |
+  yq '.service.spec.externalTrafficPolicy = "Local"')
+TRAEFIK_VALUES="$TRAEFIK_VALUES" yq -i '.spec.valuesContent = strenv(TRAEFIK_VALUES)' "$INSTALL_DIR/traefik-config.yaml"
+kubectl --context "$KUBE_CONTEXT" apply -f "$INSTALL_DIR/traefik-config.yaml"
+kubectl --context "$KUBE_CONTEXT" -n kube-system wait service/traefik \
+  --for=jsonpath='{.spec.externalTrafficPolicy}'=Local --timeout=5m
+```
+
+Confirm source retirement and no ordinary route for this hostname. Create a separate, operator-owned review Ingress and namespace-local allowlist. Do not edit the controller-owned `paperless` Ingress; it must remain absent. The offline lookup below obtains TLS/class settings without enabling a route:
+
+```bash
+export REVIEW_CIDR=203.0.113.10/32  # Replace with the authorized reviewer's actual source CIDR.
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait ingress/paperless --for=delete --timeout=5m
+kubectl --context "$KUBE_CONTEXT" get ingress --all-namespaces
+helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
-GENERATION=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.metadata.generation}')
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for="jsonpath={.status.conditions[?(@.type==\"Ready\")].observedGeneration}=$GENERATION" --timeout=30m
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
-  jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
-    any(.status.conditions[]; .type == "Ready" and .status == "True" and .observedGeneration == $g)'
+  --set "services.$HELM_INSTANCE.ingress.enabled=true" --set-string renderMode=connections \
+  --show-only templates/connections.yaml > "$INSTALL_DIR/review-connections.yaml"
+TLS_SECRET=$(yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName' "$INSTALL_DIR/review-connections.yaml")
+INGRESS_CLASS=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.ingressClass' "$INSTALL_DIR/review-connections.yaml")
+kubectl --context "$KUBE_CONTEXT" -n "$NS" create -f - <<EOF
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: paperless-review
+spec:
+  ipAllowList:
+    sourceRange: ["$REVIEW_CIDR"]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: paperless-review
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.middlewares: "$NS-paperless-review@kubernetescrd"
+spec:
+  ingressClassName: "$INGRESS_CLASS"
+  tls:
+    - hosts: ["$PAPERLESS_HOST"]
+      secretName: "$TLS_SECRET"
+  rules:
+    - host: "$PAPERLESS_HOST"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: paperless
+                port:
+                  number: 8000
+EOF
 curl --fail --silent --show-error --output /dev/null "$PAPERLESS_URL"
 ```
 
-From authorized access, verify originals/version/rendition bytes, metadata, grants, workflow, search and fresh local/OIDC login. Verify an ordinary source is denied. Reacquire API tokens as below without resetting users or assigning an SSO-only user a local password. Complete the records review before affected use resumes. Ingest new synthetic work and publish another usable point:
+Require trusted HTTPS from the reviewer address and HTTP 403 from an independent ordinary source, including a request with a forged `X-Forwarded-For` header naming the reviewer. With no `ipStrategy` configured, the allowlist uses the connection source address. Verify the deployed Middleware and other hostname routes if this fails; do not broaden the allowlist. Ordinary ingress and schedules stay disabled throughout review.
+
+From the allowed address, verify originals/version/rendition bytes, metadata, grants, workflow, search and fresh local/OIDC login. Reacquire API tokens as below without resetting users or assigning an SSO-only user a local password. Complete the records review before affected use resumes. Ingest new synthetic work and publish another usable point:
 
 ```bash
 REQUEST="manual-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -725,12 +773,16 @@ jq -e --arg request "$REQUEST" '.status.backup |
   .request == $request and .phase == "Published" and (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/backup-result.json"
 ```
 
-Only after acceptance and records approval, remove the environment's review restriction and restore approved production dependencies/schedules. Record active deployment, selected point, recovery time and remaining restrictions in existing installation records. Keep source stop intent unchanged. If target writes/effects occurred, do not automatically reactivate the old source; establish authoritative state and reconcile explicitly.
+Only after acceptance and records approval, restore approved production dependencies and replace the review route with ordinary access. Record the active deployment, selected point, recovery time and remaining restrictions in existing installation records. Keep source stop intent unchanged. If target writes/effects occurred, do not automatically reactivate the old source.
 
-Restore the retained schedule after approval; an originally empty schedule remains manual-only:
+Delete the operator-owned review route first, then enable the ordinary route and restore the retained schedule. An originally empty schedule remains manual-only:
 
 ```bash
-yq -i '.services[strenv(INSTANCE)].backup.schedule = strenv(BACKUP_SCHEDULE)' "$VALUES"
+kubectl --context "$KUBE_CONTEXT" -n "$NS" delete ingress/paperless-review --wait=true
+kubectl --context "$KUBE_CONTEXT" -n "$NS" delete middleware/paperless-review
+yq -i '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = true |
+  .services[strenv(INSTANCE)].backup.schedule = strenv(BACKUP_SCHEDULE)' "$VALUES"
+INGRESS=true
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" \
@@ -739,10 +791,25 @@ helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset
 
 ## In-place forward upgrade
 
-This retains existing state and does not exercise reconstruction or provide an untouched database fallback. Starting condition: the deployment is resumed, backup is configured, and production intake is withdrawn through verified environment controls while review access remains possible. Prevent concurrent native work and retain a final capture before changing software:
+This retains existing state and does not exercise reconstruction or provide an untouched database fallback. Resume the deployment, configure backup and withdraw production intake through verified environment controls while review access remains possible. Start with no executing native work and prevent concurrent operators. Retain the schedule and suspend scheduled admission before requesting the final export:
 
 ```bash
-REQUEST="upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
+BACKUP_SCHEDULE=$(yq -r '.services[strenv(INSTANCE)].backup.schedule // ""' "$VALUES")
+export BACKUP_SCHEDULE
+yq -i '.services[strenv(INSTANCE)].backup.schedule = ""' "$VALUES"
+helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
+  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
+  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o yaml
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs
+```
+
+Require current-generation Ready and no executing native operation before capture. Keep `BACKUP_SCHEDULE` through acceptance; if the shell is lost, recover it from the pre-operation installation record, not the temporarily empty setting. Request a fresh capture:
+
+```bash
+PREVIOUS_CAPTURE=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json |
+  jq -r '.status.backup.captureOperation // ""')
+REQUEST="upgrade-$(openssl rand -hex 8)"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" annotate paperlessapplication/paperless \
   "paperless.bartl.sh/backup-request=$REQUEST" --overwrite
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
@@ -750,8 +817,15 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
   --for=jsonpath='{.status.backup.phase}'=Published --timeout=6h
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json > "$INSTALL_DIR/pre-upgrade-backup.json"
-jq -e --arg request "$REQUEST" '.status.backup |
-  .request == $request and .phase == "Published" and (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/pre-upgrade-backup.json"
+jq -e --arg request "$REQUEST" --arg previous "$PREVIOUS_CAPTURE" '.status.backup |
+  .request == $request and .phase == "Published" and
+  (.captureOperation | length > 0) and .captureOperation != $previous and
+  (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/pre-upgrade-backup.json"
+```
+
+If this only republishes the retained export, the check fails: keep intake closed and repeat only the capture block after publication completes. Once a fresh final capture and any required secondary protection are verified, stop the application:
+
+```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 0' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
@@ -783,6 +857,15 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
 ```
 
 Verify status.version, useful behavior, new ingestion and another capture before reopening access. Never roll old software back against migrated data.
+
+After acceptance, restore the original schedule; leave an originally manual-only installation manual-only:
+
+```bash
+yq -i '.services[strenv(INSTANCE)].backup.schedule = strenv(BACKUP_SCHEDULE)' "$VALUES"
+helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
+  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
+  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+```
 
 For a 0.1.0 → 0.2.0 chart adoption, retain the old flat values/artifacts, translate every effective value into services.<instance>, preserve identity/claims/Secrets and immutable images, and register/select the new archive/checksum. Do not use the flat file as a second compatibility layer. Historical 0.1.0 archive SHA-256: dc87e82d5350a4f31850ef801521f836e4567e8ecf81e3a7e319e7935e48dfa8; OCI manifest: ef2bf48e83bb7b919d85d36d18ad6191373e401c74f03c402e88c749d1601c0d. Before any CRD-changing upgrade, review shared compatibility and apply the selected definition; Helm does not update an existing CRD:
 
@@ -882,7 +965,63 @@ The selected archive ships the service interface and defaults. Supported inputs 
 
 Connection rendering exposes HTTPS, OIDC/backup requests, credential requirements/bindings and storage claims. Configuration rendering exposes configuration.<instance>.secretName/environment and whether a client secret is needed. Protected values are added locally, never to VALUES. Refresh derived resolved bindings after source choices change. The 0.2.0 chart accepts instance, not deployment; recipes project retained replicas/ingress intent explicitly.
 
-[Maintainer procedures and historical evidence](AGENTS.md#maintainer-procedures-and-evidence) remain separate from operation. Historical runtime tests and another namespace on one host do not qualify this revised sequence or provider-loss activation. Exact-artifact results and installation-specific acceptance belong in their existing release/operating records, not this recipe.
+Historical runtime tests and another namespace on one host do not qualify this revised sequence or provider-loss activation. Exact-artifact results and installation-specific acceptance belong in their existing release/operating records, not this recipe. Maintainer procedures follow below.
+
+## Maintainer procedures and evidence
+
+The README owns operating recipes. Run offline regressions with:
+
+```bash
+go test ./...
+uv run --no-project python -m unittest discover -s tests -v
+node tests/chart.mjs
+```
+
+The source-only backup declaration correction makes omission eligible for connection preparation while explicit false opts out. Released 0.2.0 still declares omission ineligible. Neither meaning enables standalone backup without a destination. The correction requires a new chart version and renewed affected qualification; do not repackage it as published 0.2.0.
+
+Qualify exact immutable artifacts through first initialization with no store and an empty external store, ordinary restart without backup access, capture, independent reconstruction, new work/new recoverable point, 3.3.0-to-3.3.1 migration, publication retry, failed-transition isolation, stop and retained-storage reinstall. Inspect full repository/snapshot identities, original/version/rendition bytes, grants, workflow, search and fresh OIDC/TOTP. Browser/MFA and records review are separate from native Job success. Never clear markers to make qualification pass.
+
+Synthetic-library checks use:
+
+```bash
+node tests/check-library.mjs baseline /protected/library-inputs.json
+node tests/check-library.mjs verify /protected/library-inputs.json
+```
+
+Only synthetic documents with titles beginning `Synthetic ` are allowed. Inputs contain `url`, `tokensFile` (admin/reader/denied test-role tokens), `expectedFile`, `fixturesDir`, `files` (route/file with optional actor/deniedActors), `searches` (query/ids with optional actor) and `readOnlyDocument`. Include required versions/renditions. Baseline precedes capture; verify follows each transition with recovered credentials. Keep inputs, tokens, expected state and raw output outside Git; retain exact artifacts, concise results and material limits in the existing release/integration record.
+
+Historical 0.1.0 runtime tests on 25 October 2026 restored after source-VM deletion, covering originals/versions, relationships, metadata, permissions, token reacquisition, search and another backup restored into fresh database/file/Redis storage. The export's millisecond version-added timestamp precision remains a fidelity limit. Other package fault scenarios removed source installations/storage and primary repositories on one disposable K3s host; they do not establish host/provider-loss failover or cross-cluster fencing. The target was Debian 13 amd64, K3s v1.36.5+k3s1, cert-manager 1.21.3 and Helm 4.3.0; Podman 5.4.2 built images.
+
+Native observations on 24 October showed queued work surviving tested replacements, but interrupted active work did not settle within the observation window and revocation did not survive worker replacement. Warm shutdown did not independently prove writer/descendant termination. These findings justify settled-work capture, not replay/reconciliation. The experimental supervisor/scripts/chart/reconciliation code retired in `82e4357` is not the current design.
+
+The current controller binds native work to application/operation, Pod UID, container ID and execution UUID. Target-local locking, database/file binding and pending-transition markers prevent concurrent or ambiguous import/capture. The s6 prerequisite runs before migrations/init-complete; upstream custom-init alone logs errors and continues. Capture requires ended writer descendants and database sessions, preserves native media-lock ownership and retains the marker until same-execution resumption is recorded. Completion after controller loss can authorize publication, never mutation/resumption of a replacement execution. Keep these implementation boundaries distinct from operator instructions.
+
+## Building and publishing
+
+Source/registry policy and authorization precede remote writes. Never reuse published versions, silently change existing visibility/access or rebuild after qualification. For chart-only changes, select a new chart version and retain the existing pinned runtime/controller images; package once and retain SHA256SUMS plus OCI/image identities with the release. Published 0.2.0 is immutable.
+
+Runtime changes require an authorized Linux amd64 builder with Podman, Skopeo, Helm, yq and sha256sum. Set the new chart version, then:
+
+```bash
+OUT=/protected/paperless-candidate
+OUT="$OUT" bash build.sh
+```
+
+Output contains three OCI image directories, a digest-pinned chart, image-values.yaml, image digests and SHA256SUMS. Qualify these exact bytes, retain them independently and publish from the builder without rebuilding. With authorized registry access in `REGISTRY_AUTH_FILE`, publish only absent version tags:
+
+```bash
+RELEASE=$(yq -r '.version' "$OUT/chart/Chart.yaml")
+skopeo copy --authfile "$REGISTRY_AUTH_FILE" --preserve-digests \
+  "oci:$OUT/paperless-3.3.0" "docker://ghcr.io/bartlapp/bartl-paperless-runtime:3.3.0-$RELEASE"
+skopeo copy --authfile "$REGISTRY_AUTH_FILE" --preserve-digests \
+  "oci:$OUT/paperless-3.3.1" "docker://ghcr.io/bartlapp/bartl-paperless-runtime:3.3.1-$RELEASE"
+skopeo copy --authfile "$REGISTRY_AUTH_FILE" --preserve-digests \
+  "oci:$OUT/paperless-controller" "docker://ghcr.io/bartlapp/bartl-paperless-controller:$RELEASE"
+helm push "$OUT/bartl-paperless-$RELEASE.tgz" oci://ghcr.io/bartlapp \
+  --registry-config "$REGISTRY_AUTH_FILE"
+```
+
+New package public visibility needs explicit approval. Verify anonymous chart/image acquisition, archive/manifest identities and actual runtime images. Retain exact qualification limits and provider cleanup/budget outcome; a source-only or offline result is not released-path qualification.
 
 ## Native sources
 
