@@ -426,11 +426,12 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" annotate paperlessapplication/paperle
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
   --for="jsonpath={.status.backup.request}=$REQUEST" --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for=jsonpath='{.status.backup.phase}'=Published --timeout=6h
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json > "$INSTALL_DIR/backup-result.json"
+  --for=jsonpath='{.status.backup.phase}'=Published --timeout=6h -o json > "$INSTALL_DIR/backup-result.json"
 jq -e --arg request "$REQUEST" '.status.backup |
   .request == $request and .phase == "Published" and (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/backup-result.json"
 ```
+
+The receipt is the object that satisfied the publication wait. Do not replace it with a later `get`: a scheduled capture may already have advanced the live status. The request-ID check remains mandatory.
 
 Require this request's Published result; inspect captureOperation, capturedAt, resumed, repositoryID, full snapshotID and publishedAt. BackupFailed is separate from application Ready. Publication restores and byte-checks a candidate before publishing the complete-tag point. The capture boundary is settled work: no active/reserved/scheduled tasks and empty queues, not interrupted-ingestion replay.
 
@@ -545,8 +546,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" annotate paperlessapplication/paperle
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
   --for="jsonpath={.status.backup.request}=$REQUEST" --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for=jsonpath='{.status.backup.phase}'=Published --timeout=6h
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json > "$INSTALL_DIR/backup-result.json"
+  --for=jsonpath='{.status.backup.phase}'=Published --timeout=6h -o json > "$INSTALL_DIR/backup-result.json"
 jq -e --arg request "$REQUEST" --arg previous "$PREVIOUS_CAPTURE" '.status.backup |
   .request == $request and .phase == "Published" and
   (.captureOperation | length > 0) and .captureOperation != $previous and
@@ -795,8 +795,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" annotate paperlessapplication/paperle
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
   --for="jsonpath={.status.backup.request}=$REQUEST" --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for=jsonpath='{.status.backup.phase}'=Published --timeout=6h
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json > "$INSTALL_DIR/backup-result.json"
+  --for=jsonpath='{.status.backup.phase}'=Published --timeout=6h -o json > "$INSTALL_DIR/backup-result.json"
 jq -e --arg request "$REQUEST" '.status.backup |
   .request == $request and .phase == "Published" and (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/backup-result.json"
 ```
@@ -851,8 +850,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" annotate paperlessapplication/paperle
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
   --for="jsonpath={.status.backup.request}=$REQUEST" --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for=jsonpath='{.status.backup.phase}'=Published --timeout=6h
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json > "$INSTALL_DIR/pre-upgrade-backup.json"
+  --for=jsonpath='{.status.backup.phase}'=Published --timeout=6h -o json > "$INSTALL_DIR/pre-upgrade-backup.json"
 jq -e --arg request "$REQUEST" --arg previous "$PREVIOUS_CAPTURE" '.status.backup |
   .request == $request and .phase == "Published" and
   (.captureOperation | length > 0) and .captureOperation != $previous and
