@@ -10,7 +10,7 @@ New deployment: follow the steps below. Existing deployment: [resume access](#re
 
 ## Package and target
 
-Published **0.2.0** contains Paperless 3.3.0/3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1. It reuses the pinned 0.1.0 runtime/controller images. The supported transition is **3.3.0 → 3.3.1**, in place or by same-version import followed by migration. Other versions, downgrades and PostgreSQL major upgrades are unsupported. This rewritten recipe is not renewed live qualification.
+Published **0.2.0** contains Paperless 3.3.0/3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1. It reuses the pinned 0.1.0 runtime/controller images. The supported transition is **3.3.0 → 3.3.1**, in place or by same-version import followed by migration. Other versions, downgrades and PostgreSQL major upgrades are unsupported. The [four-service reference](https://github.com/bartlapp/bartl-app/blob/main/docs/reference-installation/README.md#qualification) records composed qualification; it does not replace standalone qualification.
 
 Use the [operator tools](https://github.com/bartlapp/bartl-app/blob/main/docs/operator-workstation.md#check-the-workstation) and a Linux amd64 single-node K3s profile with enforced NetworkPolicy, Traefik in kube-system and four ReadWriteOnce claims. Storage must support POSIX permissions, locks, atomic rename and fsync. Native setup needs root; ordinary services use UID 1000. One namespace holds one release named paperless and no unrelated workloads. The supported profile has one container, one Celery worker/thread and local-path storage, not HA or multi-node RWO placement. [Base](https://github.com/bartlapp/base-k3s/blob/main/README.md) supplies this profile.
 
@@ -172,7 +172,7 @@ Register that client at the provider and retain its client secret without a newl
 
 ### Compose with an existing Keycloak
 
-First install/resume and verify Keycloak through its [own release procedure](https://github.com/bartlapp/bartl-keycloak/blob/main/README.md), including DNS, TLS, credentials and useful login. Do not provision it again here. Supply its current nonsecret declaration file. Published Keycloak 0.7.0 exposes the issuer declaration consumed below; its standalone no-backup acceptance does not qualify this composition.
+First install/resume and verify Keycloak through its [own release procedure](https://github.com/bartlapp/bartl-keycloak/blob/main/README.md), including DNS, TLS, credentials and useful login. Do not provision it again here. Supply its current nonsecret declaration file.
 
 Starting condition: this consumer has no direct `oidc.issuer` override; composition selects the provider through `identityProvider`. Supply an authorized current master-realm administrator at `INSTALL_DIR/protected/keycloak-admin/{username,password}`, with usable `admin-cli` password grant and no interactive required actions. These credentials are preparation-only.
 
