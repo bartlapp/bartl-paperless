@@ -4,6 +4,10 @@ Paperless over HTTPS with PostgreSQL, Redis, automatic initialization/reconstruc
 
 New deployment: follow the steps below. Existing deployment: [resume access](#resume-an-existing-deployment), then select an operation. Use workstation Bash, keep tracing off and stop at a failed command. Creation is not a replay or partial-state repair program.
 
+- [Install](#package-and-target), [resume](#resume-an-existing-deployment) and [operate](#stop-start-and-restart)
+- [Capture](#capture-publication-and-retry), [recover](#recovery-and-replacement-upgrade) and [upgrade in place](#in-place-forward-upgrade)
+- [Remove or reinstall](#removal-and-retained-state-reinstall)
+
 ## Package and target
 
 Published **0.2.0** contains Paperless 3.3.0/3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1. It reuses the pinned 0.1.0 runtime/controller images. The supported transition is **3.3.0 → 3.3.1**, in place or by same-version import followed by migration. Other versions, downgrades and PostgreSQL major upgrades are unsupported. This rewritten recipe is not renewed live qualification.
@@ -14,37 +18,40 @@ Supply its existing version-1 installation record, complete cluster/resource ref
 
 Before relying on the service, agree interruption/data loss, source retirement, backup protection/retention, staging headroom and alert ownership. Captures interrupt intake and retain complete exports without automatic pruning. Name the records-review owner and independently surviving evidence of later deletion/hold/access decisions. Export truncates version added timestamps from microseconds to milliseconds; decide whether that fidelity is sufficient. Paperless-local MFA is not qualified; configured provider TOTP needs its own fresh-login check.
 
-## Obtain release 0.2.0
+## Select cluster access and obtain the release
 
-Select the existing installation directory. Restore an independently retained archive at this path or acquire it anonymously:
+Use direnv-hooked Bash and the existing installation's cluster directory. For an older Base context, first [refresh its loader](https://github.com/bartlapp/base-k3s/blob/main/README.md#refresh-an-existing-installations-context). For an equivalent externally supplied K3s cluster, use [supplied cluster access](https://github.com/bartlapp/base-k3s/blob/main/README.md#use-supplied-cluster-access); no Hetzner machine records are required.
+
+```bash
+cd "${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation/clusters/cluster-1"
+```
+
+At the next prompt, download the latest stable chart. Its package version is distinct from the selected native Paperless version:
 
 ```bash
 set -euo pipefail
 umask 077
-export WORK_DIR="$HOME/bartl/acme/acme-installation"
-export VALUES="$WORK_DIR/installation.yaml"
+kubectl --context "$KUBE_CONTEXT" get nodes,storageclass
 mkdir -p "$WORK_DIR/packages"
-export VERSION=0.2.0
-helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$VERSION" --destination "$WORK_DIR/packages"
-CHART="$WORK_DIR/packages/bartl-paperless-$VERSION.tgz"
-CHART_SHA256=4c6df6106efb35b2c4a25e4bb77d7ad98765572154dbcd380a9742f20bfac5c9
-printf '%s  %s\n' "$CHART_SHA256" "$CHART" | shasum -a 256 --check -
+CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
+helm pull oci://ghcr.io/bartlapp/bartl-paperless --untar --untardir "$CHART_STAGE"
+export PACKAGE_VERSION
+PACKAGE_VERSION=$(helm show chart "$CHART_STAGE/bartl-paperless" | yq -er '.version')
 ```
 
-Retain exact artifacts, configuration, Paperless key, identity-client inputs and repository credentials independently of the source. Source currently contains an **unreleased** correction to backup connection eligibility; it is not in this archive and requires a new chart release. These commands use explicit backup selection and do not depend on it.
+The registry supplies immutable charts and images; local caches are disposable. Retain configuration, the Paperless key, identity-client inputs and repository credentials independently of the source. Source contains an **unreleased** correction to backup connection eligibility; published 0.2.0 does not include it. These commands use explicit backup selection and do not depend on that correction.
 
 ## Configure a new deployment
 
 Choose unused deployment, service and package keys and a fresh namespace. These targeted assignments preserve unrelated installation entries. A replacement must retain the original instance instead.
 
 ```bash
+{
 export DEPLOYMENT=paperless
 export INSTANCE=paperless
-export CLUSTER_ID=cluster-1
 export NS=paperless-blue
 export RELEASE=paperless
 export PACKAGE=paperless
-export CHART_SHA256
 yq -i '
   .deployments[strenv(DEPLOYMENT)] = {
     "instance": strenv(INSTANCE), "cluster": strenv(CLUSTER_ID),
@@ -52,22 +59,34 @@ yq -i '
   } |
   .services[strenv(INSTANCE)] = {} |
   .packages[strenv(PACKAGE)] = {
-    "version": strenv(VERSION), "chart": "oci://ghcr.io/bartlapp/bartl-paperless",
-    "chartSha256": strenv(CHART_SHA256)
+    "version": strenv(PACKAGE_VERSION), "chart": "oci://ghcr.io/bartlapp/bartl-paperless"
   }
 ' "$VALUES"
+DEPLOYMENT_DIR="$WORK_DIR/clusters/$CLUSTER_ID/applications/$INSTANCE"
+CLUSTER_ENV=../../.envrc
+if [ "$DEPLOYMENT" != "$INSTANCE" ]; then
+  DEPLOYMENT_DIR="$DEPLOYMENT_DIR/deployments/$DEPLOYMENT"
+  CLUSTER_ENV=../../../../.envrc
+fi
+mkdir -p "$DEPLOYMENT_DIR" "$WORK_DIR/packages/$PACKAGE"
+(
+  set -o noclobber
+  printf 'source_env %s\nload_deployment "%s"\n' "$CLUSTER_ENV" "$DEPLOYMENT" > "$DEPLOYMENT_DIR/.envrc"
+)
+if [ ! -d "$WORK_DIR/packages/$PACKAGE/$PACKAGE_VERSION" ]; then
+  mv "$CHART_STAGE/bartl-paperless" "$WORK_DIR/packages/$PACKAGE/$PACKAGE_VERSION"
+fi
+rm -r "$CHART_STAGE"
+direnv allow "$DEPLOYMENT_DIR"
+cd "$DEPLOYMENT_DIR"
+}
 ```
 
-Optional hostname, claim, native-version, TLS and dependency choices belong under services.<instance>. Omitted hostname derives from dns.root; default native version is 3.3.1. Read access and render declarations:
+Wait for the next prompt: direnv loads the recorded deployment and normalized chart path. Optional hostname, claim, native-version, TLS and dependency choices belong under `services.<instance>`. Omitted hostname derives from `dns.root`; default native version is 3.3.1. Render declarations:
 
 ```bash
 HELM_INSTANCE=${INSTANCE//./\\.}
-KUBE_CONTEXT=$(yq -er '.clusters[strenv(CLUSTER_ID)].kubeconfig.context' "$VALUES")
-export KUBECONFIG="$WORK_DIR/clusters/$CLUSTER_ID/base/kubeconfig"
-# Replace only with an access file supplied for this selected cluster.
-INSTALL_DIR="$WORK_DIR/clusters/$CLUSTER_ID/applications/$INSTANCE"
-if [ "$DEPLOYMENT" != "$INSTANCE" ]; then INSTALL_DIR="$INSTALL_DIR/deployments/$DEPLOYMENT"; fi
-mkdir -p "$INSTALL_DIR"
+VERSION="$PACKAGE_VERSION"
 INGRESS=$(yq -r '[.services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
@@ -153,7 +172,7 @@ Register that client at the provider and retain its client secret without a newl
 
 ### Compose with an existing Keycloak
 
-First install/resume and verify Keycloak through its [own release procedure](https://github.com/bartlapp/bartl-keycloak/blob/main/README.md), including DNS, TLS, credentials and useful login. Do not provision it again here. Supply its current nonsecret declaration file from that procedure; 0.6.1 and the current candidate have different deployment interfaces but expose the issuer declaration used below.
+First install/resume and verify Keycloak through its [own release procedure](https://github.com/bartlapp/bartl-keycloak/blob/main/README.md), including DNS, TLS, credentials and useful login. Do not provision it again here. Supply its current nonsecret declaration file. Published Keycloak 0.7.0 exposes the issuer declaration consumed below; its standalone no-backup acceptance does not qualify this composition.
 
 Starting condition: this consumer has no direct `oidc.issuer` override; composition selects the provider through `identityProvider`. Supply an authorized current master-realm administrator at `INSTALL_DIR/protected/keycloak-admin/{username,password}`, with usable `admin-cli` password grant and no interactive required actions. These credentials are preparation-only.
 
@@ -325,6 +344,8 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" create secret generic "$BOOTSTRAP_SEC
 
 Keep protected files mode 0600, outside Git and independently available. The bootstrap account applies only to an empty installation, never imported state. Do not add controller-owned topology or custom-init/consume scripts to the configuration Secret. Import restores Paperless accounts, not the identity provider; retain that provider and client independently.
 
+Protected custody follows scope: `protected/secret-key`, `protected/oidc-client-secret` and `repository/{reader,writer}` identify the logical application and survive replacement. `protected/database-password`, bootstrap inputs and externally supplied `tls/` files serve the selected deployment; restore the required original inputs during recovery rather than running fresh generation. `protected/environment.json` is regenerated from those inputs. Keycloak administrator files are preparation-only, never application runtime credentials.
+
 ## Install and verify
 
 ```bash
@@ -354,32 +375,28 @@ Through real HTTPS, log in locally and, when selected, with fresh OIDC/TOTP. Ing
 
 ## Resume an existing deployment
 
-In fresh Bash, restore the exact archive and protected files, then select the retained deployment. This block refreshes declarations only; it creates no credentials, claims or cluster resources:
+### Load retained context
+
+In direnv-hooked Bash, enter the actual deployment directory; replacements use their nested `deployments/<deployment>` directory. For a missing selector, use Base's [one-time adoption procedure](https://github.com/bartlapp/base-k3s/blob/main/README.md#refresh-an-existing-installations-context).
+
+```bash
+cd "${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation/clusters/cluster-1/applications/paperless"
+```
+
+At the next prompt, reacquire the recorded chart only when absent and refresh declarations. Restore protected files independently; this block creates no cluster resources or credentials:
 
 ```bash
 set -euo pipefail
 umask 077
-export WORK_DIR="$HOME/bartl/acme/acme-installation"
-export VALUES="$WORK_DIR/installation.yaml"
-export DEPLOYMENT=paperless
-INSTANCE=$(yq -er '.deployments[strenv(DEPLOYMENT)].instance' "$VALUES")
-CLUSTER_ID=$(yq -er '.deployments[strenv(DEPLOYMENT)].cluster' "$VALUES")
-NS=$(yq -er '.deployments[strenv(DEPLOYMENT)].namespace' "$VALUES")
-RELEASE=$(yq -er '.deployments[strenv(DEPLOYMENT)].release' "$VALUES")
-PACKAGE=$(yq -er '.deployments[strenv(DEPLOYMENT)].package' "$VALUES")
-export INSTANCE CLUSTER_ID PACKAGE
+if [ ! -d "$CHART" ]; then
+  mkdir -p "$WORK_DIR/packages/$PACKAGE"
+  CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
+  helm pull "$CHART_REF" --version "$PACKAGE_VERSION" --untar --untardir "$CHART_STAGE"
+  mv "$CHART_STAGE/bartl-paperless" "$CHART"
+  rm -r "$CHART_STAGE"
+fi
+VERSION="$PACKAGE_VERSION"
 HELM_INSTANCE=${INSTANCE//./\\.}
-KUBE_CONTEXT=$(yq -er '.clusters[strenv(CLUSTER_ID)].kubeconfig.context' "$VALUES")
-export KUBECONFIG="$WORK_DIR/clusters/$CLUSTER_ID/base/kubeconfig"
-# Replace only with an access file supplied for this selected cluster.
-VERSION=$(yq -er '.packages[strenv(PACKAGE)].version' "$VALUES")
-test "$VERSION" = 0.2.0
-CHART="$WORK_DIR/packages/bartl-paperless-$VERSION.tgz"
-CHART_SHA256=$(yq -er '.packages[strenv(PACKAGE)].chartSha256' "$VALUES")
-printf '%s  %s\n' "$CHART_SHA256" "$CHART" | shasum -a 256 --check -
-INSTALL_DIR="$WORK_DIR/clusters/$CLUSTER_ID/applications/$INSTANCE"
-if [ "$DEPLOYMENT" != "$INSTANCE" ]; then INSTALL_DIR="$INSTALL_DIR/deployments/$DEPLOYMENT"; fi
-mkdir -p "$INSTALL_DIR"
 REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
 INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
@@ -388,6 +405,13 @@ helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
   --show-only templates/connections.yaml > "$INSTALL_DIR/paperless-connections.yaml"
 PAPERLESS_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/paperless-connections.yaml")
 PAPERLESS_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/paperless-connections.yaml")
+```
+
+### Inspect an installed deployment
+
+For an application expected to exist, inspect it after loading context. Skip this inspection only for the documented retained-state reinstall:
+
+```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o yaml
 ```
 
@@ -470,6 +494,17 @@ Use this ordered sequence for same-release recovery or the supported 3.3.0 → 3
 
 The Base profile uses the administrator-only Traefik review route below, while the package's ordinary ingress remains disabled. Supply a reviewer IPv4/CIDR distinguishable from ordinary clients; shared NAT/proxy addresses are unsuitable. Keep production outbound effects isolated and exclude direct-service or alternate-route bypass. Other environments must supply equivalent verified isolation. Source-provider loss also needs independently enforced retirement, including a returning predecessor; DNS/unreachability alone do not provide it.
 
+Before interrupting a reachable source, acquire the replacement's latest stable package. For a lost source, use the retained installation context without calling its API:
+
+```bash
+export TARGET_PACKAGE=paperless-replacement
+mkdir -p "$WORK_DIR/packages"
+TARGET_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
+helm pull oci://ghcr.io/bartlapp/bartl-paperless --untar --untardir "$TARGET_STAGE"
+export TARGET_PACKAGE_VERSION
+TARGET_PACKAGE_VERSION=$(helm show chart "$TARGET_STAGE/bartl-paperless" | yq -er '.version')
+```
+
 ### Final capture and source retirement
 
 For a reachable source, resume it, withdraw all intake paths and prevent concurrent publication/configuration changes. Keep its writer execution running for final capture. Disable public ingress and schedules, then capture:
@@ -477,7 +512,11 @@ For a reachable source, resume it, withdraw all intake paths and prevent concurr
 ```bash
 export SOURCE_DEPLOYMENT="$DEPLOYMENT"
 export SOURCE_DIR="$INSTALL_DIR"
-BACKUP_SCHEDULE=$(yq -r '.services[strenv(INSTANCE)].backup.schedule // ""' "$VALUES")
+if [ ! -e "$SOURCE_DIR/backup-schedule-before-operation" ]; then
+  (set -o noclobber; yq -r '.services[strenv(INSTANCE)].backup.schedule // ""' "$VALUES" \
+    > "$SOURCE_DIR/backup-schedule-before-operation")
+fi
+BACKUP_SCHEDULE=$(cat "$SOURCE_DIR/backup-schedule-before-operation")
 export BACKUP_SCHEDULE
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = false |
   .services[strenv(INSTANCE)].backup.schedule = ""' "$VALUES"
@@ -534,43 +573,47 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs,deployments,replicasets
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc -o json > "$SOURCE_DIR/source-pvc.json"
 ```
 
-Confirm all application/native workers gone and retirement enforced; preserve source data. For a lost/already retired source, skip these source calls, set SOURCE_DEPLOYMENT and SOURCE_DIR from independently retained records/inputs, and read BACKUP_SCHEDULE from that source instance's retained backup.schedule before target preparation disables it. Enforce retirement independently before target access.
+Confirm all application/native workers gone and retirement enforced; preserve source data. For a lost/already retired source, skip these source calls and select `SOURCE_DEPLOYMENT` and the independently recovered `SOURCE_DIR`. Before target preparation, retain the source instance's original `backup.schedule` in `"$SOURCE_DIR/backup-schedule-before-operation"` with the same save-if-absent block above. An existing file belongs to the interrupted operation and must not be overwritten by the temporarily empty setting. Enforce retirement independently before target access.
 
 ### Prepare the independent target
 
 Choose a fresh deployment/namespace and existing target cluster. Preserve logical identity and service settings. For native replacement upgrade only, set services.<instance>.version to 3.3.1 after source retirement; keep its original value for same-version recovery.
 
 ```bash
+{
 export DEPLOYMENT=paperless-replacement
 export TARGET_CLUSTER=cluster-2
 export TARGET_NAMESPACE=paperless-green
 export SOURCE_DEPLOYMENT SOURCE_DIR
 INSTANCE=$(yq -er '.deployments[strenv(SOURCE_DEPLOYMENT)].instance' "$VALUES")
-PACKAGE=$(yq -er '.deployments[strenv(SOURCE_DEPLOYMENT)].package' "$VALUES")
-export INSTANCE PACKAGE
+export INSTANCE
 yq -i '.deployments[strenv(DEPLOYMENT)] = {
   "instance": strenv(INSTANCE), "cluster": strenv(TARGET_CLUSTER),
-  "namespace": strenv(TARGET_NAMESPACE), "release": "paperless", "package": strenv(PACKAGE)
+  "namespace": strenv(TARGET_NAMESPACE), "release": "paperless", "package": strenv(TARGET_PACKAGE)
+} | .packages[strenv(TARGET_PACKAGE)] = {
+  "version": strenv(TARGET_PACKAGE_VERSION), "chart": "oci://ghcr.io/bartlapp/bartl-paperless"
 } | .operations.deployments[strenv(DEPLOYMENT)] = {"replicas": 1, "ingressEnabled": false} |
   .services[strenv(INSTANCE)].backup.schedule = ""' "$VALUES"
-INSTANCE=$(yq -er '.deployments[strenv(DEPLOYMENT)].instance' "$VALUES")
-CLUSTER_ID=$(yq -er '.deployments[strenv(DEPLOYMENT)].cluster' "$VALUES")
-NS=$(yq -er '.deployments[strenv(DEPLOYMENT)].namespace' "$VALUES")
-RELEASE=$(yq -er '.deployments[strenv(DEPLOYMENT)].release' "$VALUES")
-PACKAGE=$(yq -er '.deployments[strenv(DEPLOYMENT)].package' "$VALUES")
-export INSTANCE CLUSTER_ID PACKAGE
+TARGET_DIR="$WORK_DIR/clusters/$TARGET_CLUSTER/applications/$INSTANCE/deployments/$DEPLOYMENT"
+mkdir -p "$TARGET_DIR" "$WORK_DIR/packages/$TARGET_PACKAGE"
+(
+  set -o noclobber
+  printf 'source_env ../../../../.envrc\nload_deployment "%s"\n' "$DEPLOYMENT" > "$TARGET_DIR/.envrc"
+)
+if [ ! -d "$WORK_DIR/packages/$TARGET_PACKAGE/$TARGET_PACKAGE_VERSION" ]; then
+  mv "$TARGET_STAGE/bartl-paperless" "$WORK_DIR/packages/$TARGET_PACKAGE/$TARGET_PACKAGE_VERSION"
+fi
+rm -r "$TARGET_STAGE"
+direnv allow "$TARGET_DIR"
+cd "$TARGET_DIR"
+}
+```
+
+Wait for the next prompt. Keep `SOURCE_DIR` and the retained backup schedule through acceptance; source and target retain distinct context and operation intent.
+
+```bash
+VERSION="$PACKAGE_VERSION"
 HELM_INSTANCE=${INSTANCE//./\\.}
-KUBE_CONTEXT=$(yq -er '.clusters[strenv(CLUSTER_ID)].kubeconfig.context' "$VALUES")
-export KUBECONFIG="$WORK_DIR/clusters/$CLUSTER_ID/base/kubeconfig"
-# Replace only with an access file supplied for this selected cluster.
-VERSION=$(yq -er '.packages[strenv(PACKAGE)].version' "$VALUES")
-test "$VERSION" = 0.2.0
-CHART="$WORK_DIR/packages/bartl-paperless-$VERSION.tgz"
-CHART_SHA256=$(yq -er '.packages[strenv(PACKAGE)].chartSha256' "$VALUES")
-printf '%s  %s\n' "$CHART_SHA256" "$CHART" | shasum -a 256 --check -
-INSTALL_DIR="$WORK_DIR/clusters/$CLUSTER_ID/applications/$INSTANCE"
-if [ "$DEPLOYMENT" != "$INSTANCE" ]; then INSTALL_DIR="$INSTALL_DIR/deployments/$DEPLOYMENT"; fi
-mkdir -p "$INSTALL_DIR"
 REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
 INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
@@ -691,22 +734,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc -o json > "$INSTALL_DIR/targe
 
 Inspect status.operation/status.operations and native Job results. Require the authorized repository/full snapshot, expected native version and independent PVC UIDs/backing volumes. Ready with an empty initialization is not recovery of expected history. Failure stays isolated; preserve diagnostics and use another independent empty target, never clear markers or replay an ambiguous import.
 
-For Base's single-node Traefik, preserve the client's source address. This changes the cluster ingress Service, so retain its other settings:
-
-```bash
-kubectl --context "$KUBE_CONTEXT" -n kube-system get helmchartconfig traefik \
-  --ignore-not-found -o yaml > "$INSTALL_DIR/traefik-config.yaml"
-if [ ! -s "$INSTALL_DIR/traefik-config.yaml" ]; then
-  yq -n '.apiVersion = "helm.cattle.io/v1" | .kind = "HelmChartConfig" |
-    .metadata.name = "traefik" | .metadata.namespace = "kube-system"' > "$INSTALL_DIR/traefik-config.yaml"
-fi
-TRAEFIK_VALUES=$(yq -r '.spec.valuesContent // "{}"' "$INSTALL_DIR/traefik-config.yaml" |
-  yq '.service.spec.externalTrafficPolicy = "Local"')
-TRAEFIK_VALUES="$TRAEFIK_VALUES" yq -i '.spec.valuesContent = strenv(TRAEFIK_VALUES)' "$INSTALL_DIR/traefik-config.yaml"
-kubectl --context "$KUBE_CONTEXT" apply -f "$INSTALL_DIR/traefik-config.yaml"
-kubectl --context "$KUBE_CONTEXT" -n kube-system wait service/traefik \
-  --for=jsonpath='{.spec.externalTrafficPolicy}'=Local --timeout=5m
-```
+For Base's single-node Traefik, run [Preserve client addresses for restricted access](https://github.com/bartlapp/base-k3s/blob/main/README.md#preserve-client-addresses-for-restricted-access) with this target cluster selected. It preserves the other cluster ingress settings. Then return here without changing the selected deployment.
 
 Confirm source retirement and no ordinary route for this hostname. Create a separate, operator-owned review Ingress and namespace-local allowlist. Do not edit the controller-owned `paperless` Ingress; it must remain absent. The offline lookup below obtains TLS/class settings without enabling a route:
 
@@ -773,11 +801,13 @@ jq -e --arg request "$REQUEST" '.status.backup |
   .request == $request and .phase == "Published" and (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/backup-result.json"
 ```
 
-Only after acceptance and records approval, restore approved production dependencies and replace the review route with ordinary access. Record the active deployment, selected point, recovery time and remaining restrictions in existing installation records. Keep source stop intent unchanged. If target writes/effects occurred, do not automatically reactivate the old source.
+Only after acceptance and records approval, restore approved production dependencies and replace the review route with ordinary access. Keep the active deployment, selected point and necessary operating restrictions in the installation record; qualification results belong with the release. Keep source stop intent unchanged. If target writes/effects occurred, do not automatically reactivate the old source.
 
 Delete the operator-owned review route first, then enable the ordinary route and restore the retained schedule. An originally empty schedule remains manual-only:
 
 ```bash
+BACKUP_SCHEDULE=$(cat "$SOURCE_DIR/backup-schedule-before-operation")
+export BACKUP_SCHEDULE
 kubectl --context "$KUBE_CONTEXT" -n "$NS" delete ingress/paperless-review --wait=true
 kubectl --context "$KUBE_CONTEXT" -n "$NS" delete middleware/paperless-review
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = true |
@@ -789,12 +819,18 @@ helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset
   --wait=legacy --timeout=5m
 ```
 
+Verify ordinary access and the restored schedule before removing `"$SOURCE_DIR/backup-schedule-before-operation"`. Keep that temporary input independently available while recovery is unfinished; in another shell select the same source-input directory before activation.
+
 ## In-place forward upgrade
 
 This retains existing state and does not exercise reconstruction or provide an untouched database fallback. Resume the deployment, configure backup and withdraw production intake through verified environment controls while review access remains possible. Start with no executing native work and prevent concurrent operators. Retain the schedule and suspend scheduled admission before requesting the final export:
 
 ```bash
-BACKUP_SCHEDULE=$(yq -r '.services[strenv(INSTANCE)].backup.schedule // ""' "$VALUES")
+if [ ! -e "$INSTALL_DIR/backup-schedule-before-operation" ]; then
+  (set -o noclobber; yq -r '.services[strenv(INSTANCE)].backup.schedule // ""' "$VALUES" \
+    > "$INSTALL_DIR/backup-schedule-before-operation")
+fi
+BACKUP_SCHEDULE=$(cat "$INSTALL_DIR/backup-schedule-before-operation")
 export BACKUP_SCHEDULE
 yq -i '.services[strenv(INSTANCE)].backup.schedule = ""' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
@@ -804,7 +840,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs
 ```
 
-Require current-generation Ready and no executing native operation before capture. Keep `BACKUP_SCHEDULE` through acceptance; if the shell is lost, recover it from the pre-operation installation record, not the temporarily empty setting. Request a fresh capture:
+Require current-generation Ready and no executing native operation before capture. Keep the temporary schedule file through acceptance; a fresh shell reloads it instead of reading the temporarily empty setting. Request a fresh capture:
 
 ```bash
 PREVIOUS_CAPTURE=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json |
@@ -861,13 +897,17 @@ Verify status.version, useful behavior, new ingestion and another capture before
 After acceptance, restore the original schedule; leave an originally manual-only installation manual-only:
 
 ```bash
+BACKUP_SCHEDULE=$(cat "$INSTALL_DIR/backup-schedule-before-operation")
+export BACKUP_SCHEDULE
 yq -i '.services[strenv(INSTANCE)].backup.schedule = strenv(BACKUP_SCHEDULE)' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
 ```
 
-For a 0.1.0 → 0.2.0 chart adoption, retain the old flat values/artifacts, translate every effective value into services.<instance>, preserve identity/claims/Secrets and immutable images, and register/select the new archive/checksum. Do not use the flat file as a second compatibility layer. Historical 0.1.0 archive SHA-256: dc87e82d5350a4f31850ef801521f836e4567e8ecf81e3a7e319e7935e48dfa8; OCI manifest: ef2bf48e83bb7b919d85d36d18ad6191373e401c74f03c402e88c749d1601c0d. Before any CRD-changing upgrade, review shared compatibility and apply the selected definition; Helm does not update an existing CRD:
+Verify the restored schedule and ordinary access, then remove `"$INSTALL_DIR/backup-schedule-before-operation"`. Retain it if the operation is interrupted.
+
+For a 0.1.0 → 0.2.0 chart adoption, retain the old flat values/artifact references, translate every effective value into `services.<instance>`, preserve identity/claims/Secrets and immutable images, and register/select the immutable 0.2.0 package reference. Reacquire it through **Load retained context**, not a separately maintained customer archive. Do not use the flat file as a second compatibility layer. Historical 0.1.0 archive SHA-256: dc87e82d5350a4f31850ef801521f836e4567e8ecf81e3a7e319e7935e48dfa8; OCI manifest: ef2bf48e83bb7b919d85d36d18ad6191373e401c74f03c402e88c749d1601c0d. Before any CRD-changing upgrade, review shared compatibility and apply the selected definition; Helm does not update an existing CRD:
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" apply -f <(helm show crds "$CHART")
@@ -904,7 +944,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc,secrets
 
 Finalization drains dependencies and releases only this CR's claim bindings. Claims/data/Secrets survive. Do not bypass finalizers or delete controller/namespace first. A timeout is not authorization to force deletion.
 
-After successful finalization, with intact retained state and no failed transition marker or competing owner, reinstall without recreating PVCs or credentials:
+After successful finalization, with intact retained state and no failed transition marker or competing owner, reinstall without recreating PVCs or credentials. In a fresh shell first [load retained context](#load-retained-context), skipping live inspection of the deliberately deleted application:
 
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 1' "$VALUES"
@@ -965,7 +1005,7 @@ The selected archive ships the service interface and defaults. Supported inputs 
 
 Connection rendering exposes HTTPS, OIDC/backup requests, credential requirements/bindings and storage claims. Configuration rendering exposes configuration.<instance>.secretName/environment and whether a client secret is needed. Protected values are added locally, never to VALUES. Refresh derived resolved bindings after source choices change. The 0.2.0 chart accepts instance, not deployment; recipes project retained replicas/ingress intent explicitly.
 
-Historical runtime tests and another namespace on one host do not qualify this revised sequence or provider-loss activation. Exact-artifact results and installation-specific acceptance belong in their existing release/operating records, not this recipe. Maintainer procedures follow below.
+Historical runtime tests and another namespace on one host do not qualify this revised sequence or provider-loss activation. Exact-artifact qualification results belong in the existing release/integration record, not a customer execution diary. Maintainer procedures follow below.
 
 ## Maintainer procedures and evidence
 
