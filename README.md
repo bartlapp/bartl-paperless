@@ -354,9 +354,6 @@ INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .s
 helm install "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
-GENERATION=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.metadata.generation}')
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for="jsonpath={.status.conditions[?(@.type==\"Ready\")].observedGeneration}=$GENERATION" --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -439,6 +436,19 @@ A failed publication retains its complete capture. Correct the endpoint/credenti
 
 Monitor staging, overdue/failed requests, capture age and required independent replication. Do not prune an active/retry capture or the last usable point. Old capture cleanup needs verified publication/protection and the customer's retention authorization.
 
+## Apply changes to a running deployment
+
+Starting condition: a running, Ready deployment with capture/publication settled and no state-changing native work executing. Edit the intended retained configuration, then **Load retained context** again to refresh declarations and replica/ingress intent. Apply scheduling changes without changing run or routing intent:
+
+```bash
+helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
+  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
+  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
+```
+
+Use the dedicated version-transition and replacement procedures for those operations. Configuration changes do not repair failed state.
+
 ## Stop, start and restart
 
 Resume first. Export needed logs before stop: cancellation deletes native Jobs/Pods. Persist intent rather than scaling controller-owned Deployments:
@@ -450,9 +460,6 @@ INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .s
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
-GENERATION=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.metadata.generation}')
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for="jsonpath={.status.conditions[?(@.type==\"Stopped\")].observedGeneration}=$GENERATION" --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Stopped --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -471,9 +478,6 @@ INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .s
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
-GENERATION=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.metadata.generation}')
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for="jsonpath={.status.conditions[?(@.type==\"Ready\")].observedGeneration}=$GENERATION" --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -526,9 +530,6 @@ INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .s
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
-GENERATION=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.metadata.generation}')
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for="jsonpath={.status.conditions[?(@.type==\"Ready\")].observedGeneration}=$GENERATION" --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -562,9 +563,6 @@ INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .s
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
-GENERATION=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.metadata.generation}')
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for="jsonpath={.status.conditions[?(@.type==\"Stopped\")].observedGeneration}=$GENERATION" --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Stopped --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -717,9 +715,6 @@ INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .s
 helm install "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
-GENERATION=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.metadata.generation}')
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for="jsonpath={.status.conditions[?(@.type==\"Ready\")].observedGeneration}=$GENERATION" --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -864,9 +859,6 @@ yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 0' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.replicas=0" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
-GENERATION=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.metadata.generation}')
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for="jsonpath={.status.conditions[?(@.type==\"Stopped\")].observedGeneration}=$GENERATION" --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Stopped --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs
 ```
@@ -881,9 +873,6 @@ INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .s
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
-GENERATION=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.metadata.generation}')
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for="jsonpath={.status.conditions[?(@.type==\"Ready\")].observedGeneration}=$GENERATION" --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -922,9 +911,6 @@ INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .s
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
-GENERATION=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.metadata.generation}')
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for="jsonpath={.status.conditions[?(@.type==\"Stopped\")].observedGeneration}=$GENERATION" --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Stopped --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -951,9 +937,6 @@ INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .s
 helm install "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" -f "$VALUES" \
   --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
   --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
-GENERATION=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.metadata.generation}')
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for="jsonpath={.status.conditions[?(@.type==\"Ready\")].observedGeneration}=$GENERATION" --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
