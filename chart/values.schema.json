@@ -4,13 +4,18 @@
   "additionalProperties": true,
   "required": [
     "installation",
-    "instance",
     "renderMode",
     "services"
   ],
   "$comment": "Dynamic selected service and connection bindings are validated against interface.schema.json; unrelated entries are not Paperless inputs.",
   "properties": {
     "installation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+    },
+    "deployment": {
       "type": "string",
       "minLength": 1,
       "maxLength": 128,

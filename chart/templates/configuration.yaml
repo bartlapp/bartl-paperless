@@ -1,4 +1,5 @@
 {{- if eq .Values.renderMode "configuration" }}
+{{- $instance := (include "paperless.selection" . | fromYaml).instance }}
 {{- $service := include "paperless.service" . | fromYaml }}
 {{- $backup := include "paperless.backup" (dict "root" . "service" $service) | fromYaml }}
 {{- $oidc := include "paperless.oidc" (dict "root" . "service" $service) | fromYaml }}
@@ -10,7 +11,7 @@
   {{- $_ := set $environment "PAPERLESS_SOCIALACCOUNT_PROVIDERS" (mustToJson $native) }}
 {{- end }}
 configuration:
-  {{ .Values.instance | quote }}:
+  {{ $instance | quote }}:
     secretName: {{ $service.configurationSecret | quote }}
     environment:
       {{- toYaml $environment | nindent 6 }}

@@ -1,4 +1,5 @@
 {{- if eq .Values.renderMode "connections" }}
+{{- $instance := (include "paperless.selection" . | fromYaml).instance }}
 {{- $service := include "paperless.service" . | fromYaml }}
 {{- $backup := $service.backup }}
 {{- $requested := true }}
@@ -31,7 +32,7 @@
   {{- $_ := set $bindings "tls" (dict "secretName" $service.ingress.tlsSecret) }}
 {{- end }}
 services:
-  {{ .Values.instance | quote }}:
+  {{ $instance | quote }}:
     endpoints:
       https:
         url: {{ $url | quote }}
@@ -41,7 +42,7 @@ services:
         tlsManaged: {{ $service.tls.managed }}
 oidc:
   requests:
-    {{ .Values.instance | quote }}:
+    {{ $instance | quote }}:
       enabled: {{ $oidcEnabled }}
       {{- if $oidcEnabled }}
       {{- with $service.identityProvider }}
@@ -60,7 +61,7 @@ oidc:
       {{- end }}
 backup:
   requests:
-    {{ .Values.instance | quote }}:
+    {{ $instance | quote }}:
       enabled: {{ $requested }}
       {{- if $requested }}
       {{- with $backup.endpoint }}
@@ -74,14 +75,14 @@ backup:
       {{- end }}
 credentials:
   requirements:
-    {{ .Values.instance | quote }}:
+    {{ $instance | quote }}:
       {{- toYaml $requirements | nindent 6 }}
   bindings:
-    {{ .Values.instance | quote }}:
+    {{ $instance | quote }}:
       {{- toYaml $bindings | nindent 6 }}
 storage:
   claims:
-    {{ .Values.instance | quote }}:
+    {{ $instance | quote }}:
       {{- range $role, $claim := $service.claims }}
       {{ $role }}:
         claimName: {{ $claim | quote }}

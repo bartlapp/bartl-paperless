@@ -63,19 +63,61 @@
 {{- .Files.Get "defaults.yaml" -}}
 {{- end -}}
 
+{{/* Resolve only the selected deployment without changing installation values. */}}
+{{- define "paperless.selection" -}}
+{{- $instance := .Values.instance | default "paperless" -}}
+{{- $intent := dict -}}
+{{- if .Values.deployment -}}
+  {{- $id := .Values.deployment -}}
+  {{- $definitions := (mustFromJson (.Files.Get "interface.schema.json")).definitions -}}
+  {{- if not (kindIs "map" .Values.deployments) -}}{{- fail "deployments must be an object when deployment is selected" -}}{{- end -}}
+  {{- if not (hasKey .Values.deployments $id) -}}{{- fail (printf "deployments.%s is required" $id) -}}{{- end -}}
+  {{- $deployment := index .Values.deployments $id -}}
+  {{- include "paperless.validate" (dict "schema" $definitions.deployment "definitions" $definitions "value" $deployment "path" (printf "deployments.%s" $id)) -}}
+  {{- if and (hasKey .Values "instance") (ne .Values.instance $deployment.instance) -}}
+    {{- fail (printf "instance %s conflicts with deployments.%s.instance %s" .Values.instance $id $deployment.instance) -}}
+  {{- end -}}
+  {{- $instance = $deployment.instance -}}
+  {{- if ne $deployment.namespace .Release.Namespace -}}{{- fail (printf "deployments.%s.namespace %s does not match Helm namespace %s" $id $deployment.namespace .Release.Namespace) -}}{{- end -}}
+  {{- if ne $deployment.release .Release.Name -}}{{- fail (printf "deployments.%s.release %s does not match Helm release %s" $id $deployment.release .Release.Name) -}}{{- end -}}
+  {{- if not (hasKey .Values.services $instance) -}}{{- fail (printf "services.%s is required by deployments.%s.instance" $instance $id) -}}{{- end -}}
+  {{- if not (kindIs "map" .Values.packages) -}}{{- fail "packages must be an object when deployment is selected" -}}{{- end -}}
+  {{- if not (hasKey .Values.packages $deployment.package) -}}{{- fail (printf "packages.%s is required by deployments.%s.package" $deployment.package $id) -}}{{- end -}}
+  {{- $package := index .Values.packages $deployment.package -}}
+  {{- include "paperless.validate" (dict "schema" $definitions.package "definitions" $definitions "value" $package "path" (printf "packages.%s" $deployment.package)) -}}
+  {{- if ne $package.version .Chart.Version -}}{{- fail (printf "packages.%s.version selects %s but this chart is %s" $deployment.package $package.version .Chart.Version) -}}{{- end -}}
+  {{- if hasKey .Values "operations" -}}
+    {{- if not (kindIs "map" .Values.operations) -}}{{- fail "operations must be an object" -}}{{- end -}}
+    {{- if hasKey .Values.operations "deployments" -}}
+      {{- if not (kindIs "map" .Values.operations.deployments) -}}{{- fail "operations.deployments must be an object" -}}{{- end -}}
+      {{- if hasKey .Values.operations.deployments $id -}}
+        {{- $intent = index .Values.operations.deployments $id -}}
+        {{- include "paperless.validate" (dict "schema" $definitions.intent "definitions" $definitions "value" $intent "path" (printf "operations.deployments.%s" $id)) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- toYaml (dict "instance" $instance "intent" $intent) -}}
+{{- end -}}
+
 {{- define "paperless.service" -}}
-{{- $selected := get .Values.services .Values.instance | default dict -}}
-{{- if hasKey .Values.services .Values.instance -}}{{- $selected = index .Values.services .Values.instance -}}{{- end -}}
+{{- $selection := include "paperless.selection" . | fromYaml -}}
+{{- $instance := $selection.instance -}}
+{{- $selected := dict -}}
+{{- if hasKey .Values.services $instance -}}{{- $selected = index .Values.services $instance -}}{{- end -}}
 {{- $definitions := (mustFromJson (.Files.Get "interface.schema.json")).definitions -}}
-{{- include "paperless.validate" (dict "schema" $definitions.service "definitions" $definitions "value" $selected "path" (printf "services.%s" .Values.instance)) -}}
-{{- if and (hasKey $selected "release") (ne $selected.release .Chart.Version) -}}{{- fail (printf "services.%s.release selects %s but this chart is %s" .Values.instance $selected.release .Chart.Version) -}}{{- end -}}
+{{- include "paperless.validate" (dict "schema" $definitions.service "definitions" $definitions "value" $selected "path" (printf "services.%s" $instance)) -}}
+{{- if and (hasKey $selected "release") (ne $selected.release .Chart.Version) -}}{{- fail (printf "services.%s.release selects %s but this chart is %s" $instance $selected.release .Chart.Version) -}}{{- end -}}
 {{- $service := mergeOverwrite (include "paperless.defaults" . | fromYaml) (deepCopy $selected) -}}
+{{- if hasKey $selection.intent "version" -}}{{- $_ := set $service "version" $selection.intent.version -}}{{- end -}}
+{{- if hasKey $selection.intent "replicas" -}}{{- $_ := set $service "replicas" $selection.intent.replicas -}}{{- end -}}
+{{- if hasKey $selection.intent "ingressEnabled" -}}{{- $_ := set $service.ingress "enabled" $selection.intent.ingressEnabled -}}{{- end -}}
 {{- if not (hasKey $service "hostname") -}}
   {{- $domain := required "dns.root is required when the selected Paperless service has no hostname" (get (get .Values "dns" | default dict) "root") -}}
   {{- $_ := set $service "hostname" (printf "paperless.%s" $domain) -}}
 {{- end -}}
-{{- if not (hasKey $service.oidc "clientId") -}}{{- $_ := set $service.oidc "clientId" .Values.instance -}}{{- end -}}
-{{- include "paperless.validate" (dict "schema" $definitions.service "definitions" $definitions "value" $service "path" (printf "services.%s" .Values.instance)) -}}
+{{- if not (hasKey $service.oidc "clientId") -}}{{- $_ := set $service.oidc "clientId" $instance -}}{{- end -}}
+{{- include "paperless.validate" (dict "schema" $definitions.service "definitions" $definitions "value" $service "path" (printf "services.%s" $instance)) -}}
 {{- if and (hasKey $service.backup "endpoint") (hasKey $service.backup "repository") -}}{{- fail "Paperless backup must select endpoint or repository, not both" -}}{{- end -}}
 {{- if and (or $service.ingress.enabled $service.tls.managed) (not $service.ingress.tlsSecret) -}}{{- fail "Paperless ingress.tlsSecret is required for ingress or managed TLS" -}}{{- end -}}
 {{- if ne (len (uniq (values $service.claims))) 4 -}}{{- fail "Paperless claims must identify four distinct PVCs" -}}{{- end -}}
@@ -88,6 +130,7 @@
 {{- define "paperless.oidc" -}}
 {{- $service := .service -}}
 {{- $root := .root -}}
+{{- $instance := (include "paperless.selection" $root | fromYaml).instance -}}
 {{- $oidc := deepCopy $service.oidc -}}
 {{- if hasKey $service "identityProvider" -}}
   {{- $resolved := get $root.Values "resolved" | default dict -}}
@@ -96,12 +139,12 @@
   {{- if not (kindIs "map" $oidcResolved) -}}{{- fail "resolved.oidc must be an object" -}}{{- end -}}
   {{- $bindings := get $oidcResolved "bindings" | default dict -}}
   {{- if not (kindIs "map" $bindings) -}}{{- fail "resolved.oidc.bindings must be an object" -}}{{- end -}}
-  {{- if not (hasKey $bindings $root.Values.instance) -}}{{- fail (printf "services.%s.identityProvider requires resolved.oidc.bindings.%s from the selected provider" $root.Values.instance $root.Values.instance) -}}{{- end -}}
-  {{- $binding := index $bindings $root.Values.instance -}}
+  {{- if not (hasKey $bindings $instance) -}}{{- fail (printf "services.%s.identityProvider requires resolved.oidc.bindings.%s from the selected provider" $instance $instance) -}}{{- end -}}
+  {{- $binding := index $bindings $instance -}}
   {{- $definitions := (mustFromJson ($root.Files.Get "interface.schema.json")).definitions -}}
-  {{- include "paperless.validate" (dict "schema" $definitions.oidcBinding "definitions" $definitions "value" $binding "path" (printf "resolved.oidc.bindings.%s" $root.Values.instance)) -}}
+  {{- include "paperless.validate" (dict "schema" $definitions.oidcBinding "definitions" $definitions "value" $binding "path" (printf "resolved.oidc.bindings.%s" $instance)) -}}
   {{- if ne $binding.provider $service.identityProvider -}}{{- fail "Paperless OIDC binding provider must match identityProvider" -}}{{- end -}}
-  {{- $bindingClient := $root.Values.instance -}}
+  {{- $bindingClient := $instance -}}
   {{- if hasKey $binding "clientId" -}}{{- $bindingClient = $binding.clientId -}}{{- end -}}
   {{- if ne $bindingClient $oidc.clientId -}}{{- fail "Paperless OIDC binding clientId must match the selected clientId" -}}{{- end -}}
   {{- $_ := set $oidc "issuer" $binding.issuer -}}
@@ -114,8 +157,9 @@
 {{- define "paperless.backup" -}}
 {{- $root := .root -}}
 {{- $service := .service -}}
+{{- $instance := (include "paperless.selection" $root | fromYaml).instance -}}
 {{- $desired := $service.backup -}}
-{{- $explicit := (index $root.Values.services $root.Values.instance | default dict).backup | default dict -}}
+{{- $explicit := (index $root.Values.services $instance | default dict).backup | default dict -}}
 {{- if and (hasKey $desired "enabled") (not $desired.enabled) -}}
   {{- toYaml (dict "enabled" false) -}}
 {{- else -}}
@@ -127,23 +171,23 @@
       {{- if not (kindIs "map" $resolved.backup) -}}{{- fail "resolved.backup must be an object" -}}{{- end -}}
       {{- if hasKey $resolved.backup "bindings" -}}
         {{- if not (kindIs "map" $resolved.backup.bindings) -}}{{- fail "resolved.backup.bindings must be an object" -}}{{- end -}}
-        {{- if hasKey $resolved.backup.bindings $root.Values.instance -}}
-          {{- $binding = index $resolved.backup.bindings $root.Values.instance -}}
+        {{- if hasKey $resolved.backup.bindings $instance -}}
+          {{- $binding = index $resolved.backup.bindings $instance -}}
           {{- $definitions := (mustFromJson ($root.Files.Get "interface.schema.json")).definitions -}}
-          {{- include "paperless.validate" (dict "schema" $definitions.binding "definitions" $definitions "value" $binding "path" (printf "resolved.backup.bindings.%s" $root.Values.instance)) -}}
+          {{- include "paperless.validate" (dict "schema" $definitions.binding "definitions" $definitions "value" $binding "path" (printf "resolved.backup.bindings.%s" $instance)) -}}
         {{- end -}}
       {{- end -}}
     {{- end -}}
   {{- end -}}
   {{- if hasKey $desired "endpoint" -}}
     {{- if or (not (hasKey $binding "endpoint")) (ne $desired.endpoint $binding.endpoint) -}}
-      {{- fail (printf "services.%s.backup.endpoint requires a matching resolved.backup.bindings.%s.endpoint" $root.Values.instance $root.Values.instance) -}}
+      {{- fail (printf "services.%s.backup.endpoint requires a matching resolved.backup.bindings.%s.endpoint" $instance $instance) -}}
     {{- end -}}
     {{- if not (hasKey $binding "repository") -}}{{- fail "The selected backup endpoint binding must supply repository" -}}{{- end -}}
   {{- end -}}
   {{- range $key := list "endpoint" "repository" "enabled" -}}
     {{- if and (hasKey $explicit $key) (hasKey $binding $key) (ne (index $explicit $key) (index $binding $key)) -}}
-      {{- fail (printf "services.%s.backup.%s conflicts with its resolved backup binding" $root.Values.instance $key) -}}
+      {{- fail (printf "services.%s.backup.%s conflicts with its resolved backup binding" $instance $key) -}}
     {{- end -}}
   {{- end -}}
   {{- if and (hasKey $binding "enabled") (not $binding.enabled) -}}

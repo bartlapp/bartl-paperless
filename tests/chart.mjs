@@ -7,8 +7,11 @@ import {fileURLToPath} from 'node:url';
 const chart = process.env.PAPERLESS_CHART || fileURLToPath(new URL('../chart', import.meta.url));
 const helm = process.env.HELM || 'helm';
 const yq = process.env.YQ || 'yq';
-function render(values, {mode = 'deployment', release = 'paperless'} = {}) {
-  return spawnSync(helm, ['template', release, chart, '-f', '-', '--set-string', `renderMode=${mode}`], {
+function render(values, {mode = 'deployment', release = 'paperless', namespace = 'default', deployment, inspectIngress = false} = {}) {
+  const args = ['template', release, chart, '-n', namespace, '-f', '-', '--set-string', `renderMode=${mode}`];
+  if (deployment) args.push('--set-string', `deployment=${deployment}`);
+  if (inspectIngress) args.push('--set', `operations.deployments.${deployment}.ingressEnabled=true`);
+  return spawnSync(helm, args, {
     input: JSON.stringify(values), encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
   });
 }
@@ -26,8 +29,8 @@ function deployment(v) {
   assert.ok(app);
   return {spec: app.spec, docs};
 }
-function declaration(v) { return documents(render(v, {mode: 'connections', release: 'offline'}))[0]; }
-function configuration(v) { return documents(render(v, {mode: 'configuration', release: 'offline'}))[0].configuration[v.instance || 'paperless']; }
+function declaration(v, options) { return documents(render(v, {mode: 'connections', release: 'offline', ...options}))[0]; }
+function configuration(v, options) { return documents(render(v, {mode: 'configuration', release: 'offline', ...options}))[0].configuration[v.instance || v.deployments?.[options?.deployment]?.instance || 'paperless']; }
 function rejects(v, options) { assert.notEqual(render(v, options).status, 0, 'invalid inputs rendered successfully'); }
 let checks = 0;
 function check(name, fn) { fn(); checks++; console.log('PASS ' + name); }
@@ -157,9 +160,64 @@ check('unresolved, conflicting and unsafe backup inputs fail at rendering bounda
   selected(v).backup = {repository: 'rest:https://backup.example/paperless/', endpoint: 'archive'}; rejects(v, {mode: 'connections'});
 });
 check('release name guard applies only to deployment and selected chart release is enforced', () => {
-  const v = base(); selected(v).release = '0.2.0'; deployment(v); declaration(v); configuration(v);
+  const v = base(); selected(v).release = '0.2.1'; deployment(v); declaration(v); configuration(v);
   rejects(v, {release: 'other'});
-  selected(v).release = '0.1.0'; for (const mode of ['deployment', 'connections', 'configuration']) rejects(v, {mode});
+  selected(v).release = '0.2.0'; for (const mode of ['deployment', 'connections', 'configuration']) rejects(v, {mode});
+});
+check('selected deployments apply only their own intent across runtime and declarations', () => {
+  const v = base();
+  v.services = {paperless: {version: '3.3.1', replicas: 1, ingress: {enabled: true}}, records: {
+    version: '3.3.0', replicas: 0, ingress: {enabled: false}, oidc: {issuer: 'https://id.example/realms/acme'},
+    backup: {repository: 'rest:https://backup.example/records/'}}
+  };
+  v.deployments = {
+    source: {instance: 'records', cluster: 'cluster-1', namespace: 'blue', release: 'paperless', package: 'records'},
+    target: {instance: 'records', cluster: 'cluster-2', namespace: 'green', release: 'paperless', package: 'records'},
+    other: {instance: 'paperless', cluster: 'cluster-3', namespace: 'other', release: 'paperless', package: 'other'}
+  };
+  v.packages = {records: {version: '0.2.1', chart: 'oci://ghcr.io/bartlapp/bartl-paperless'}, other: {version: '0.1.0', chart: 'irrelevant'}};
+  v.operations = {deployments: {source: {replicas: 0, ingressEnabled: false}, target: {version: '3.3.1', replicas: 1, ingressEnabled: true}, other: {replicas: 1, ingressEnabled: true}}};
+  for (const [id, namespace, version, replicas, ingressEnabled] of [['source', 'blue', '3.3.0', 0, false], ['target', 'green', '3.3.1', 1, true]]) {
+    const options = {namespace, deployment: id};
+    const docs = documents(render(v, options));
+    const app = docs.find(d => d.kind === 'PaperlessApplication');
+    assert.deepEqual(app.spec.identity, {installation: 'acme', instance: 'records'});
+    assert.equal(app.spec.version, version);
+    assert.equal(app.spec.replicas, replicas);
+    assert.equal(app.spec.ingress.enabled, ingressEnabled);
+    const connections = declaration(v, {...options, release: 'paperless'});
+    assert.equal(connections.services.records.endpoints.https.ingressEnabled, ingressEnabled);
+    assert.equal(connections.oidc.requests.records.clientId, 'records');
+    assert.equal(connections.backup.requests.records.repository, 'rest:https://backup.example/records/');
+    assert.equal(configuration(v, {...options, release: 'paperless'}).environment.PAPERLESS_URL, 'https://paperless.acme.example');
+  }
+  v.operations.deployments.source = {}; v.services.records.replicas = 0;
+  assert.equal(documents(render(v, {namespace: 'blue', deployment: 'source'})).find(d => d.kind === 'PaperlessApplication').spec.replicas, 0);
+  assert.equal(declaration(v, {namespace: 'blue', release: 'paperless', deployment: 'source'}).services.records.endpoints.https.ingressEnabled, false);
+  const inspection = documents(render(v, {mode: 'connections', namespace: 'blue', deployment: 'source', inspectIngress: true}))[0];
+  assert.equal(inspection.services.records.endpoints.https.ingressEnabled, true);
+  assert.equal(declaration(v, {namespace: 'blue', release: 'paperless', deployment: 'source'}).services.records.endpoints.https.ingressEnabled, false);
+});
+check('deployment selection rejects wrong target, version, conflict and invalid selected intent', () => {
+  const v = base();
+  v.deployments = {blue: {instance: 'paperless', cluster: 'cluster-1', namespace: 'blue', release: 'paperless', package: 'paperless'}};
+  v.packages = {paperless: {version: '0.2.1', chart: 'oci://ghcr.io/bartlapp/bartl-paperless'}};
+  const options = {namespace: 'blue', deployment: 'blue'};
+  for (const mode of ['deployment', 'connections', 'configuration']) documents(render(v, {...options, mode}));
+  for (const mode of ['deployment', 'connections', 'configuration']) {
+    rejects(v, {...options, mode, namespace: 'wrong'});
+    rejects(v, {...options, mode, release: 'wrong'});
+    v.packages.paperless.version = '0.2.0'; rejects(v, {...options, mode});
+    v.packages.paperless.version = '0.2.1';
+  }
+  v.packages.paperless.version = '0.2.1'; v.instance = 'other'; rejects(v, options);
+  delete v.instance;
+  v.operations = {deployments: {blue: {replicas: 2}}}; rejects(v, options);
+  v.operations.deployments.blue = {ingressEnabled: 'false'}; rejects(v, options);
+  v.operations.deployments.blue = {version: '3.4.0'}; rejects(v, options);
+  v.operations.deployments.blue = {}; v.deployments.blue.instance = 'missing'; rejects(v, options);
+  v.deployments.blue.instance = 'paperless'; delete v.packages.paperless; rejects(v, options);
+  delete v.deployments.blue; rejects(v, options);
 });
 check('strict selected interface rejects flat legacy inputs, unknown fields and invalid values', () => {
   for (const [key, value] of Object.entries({identity: {}, replicas: 1, version: '3.3.1', images: {}, controller: {}, claims: {}, configurationSecret: 'secret', bootstrapSecret: '', ingress: {}, backup: {repository: 'rest:https://backup.example/paperless/'}})) {

@@ -39,7 +39,7 @@ export PACKAGE_VERSION
 PACKAGE_VERSION=$(helm show chart "$CHART_STAGE/bartl-paperless" | yq -er '.version')
 ```
 
-The registry supplies immutable charts and images; local caches are disposable. Retain configuration, the Paperless key, identity-client inputs and repository credentials independently of the source. Source contains an **unreleased** correction to backup connection eligibility; published 0.2.0 does not include it. These commands use explicit backup selection and do not depend on that correction.
+The registry supplies immutable charts and images; local caches are disposable. Retain configuration, the Paperless key, identity-client inputs and repository credentials independently of the source. The **local, unpublished 0.2.1 candidate** adds deployment selection and corrects backup connection eligibility. Published 0.2.0 does not implement this procedure's deployment interface; use an independently qualified 0.2.1-or-newer release before following it against a live installation.
 
 ## Configure a new deployment
 
@@ -82,15 +82,11 @@ cd "$DEPLOYMENT_DIR"
 }
 ```
 
-Wait for the next prompt: direnv loads the recorded deployment and normalized chart path. Optional hostname, claim, native-version, TLS and dependency choices belong under `services.<instance>`. Omitted hostname derives from `dns.root`; default native version is 3.3.1. Render declarations:
+Wait for the next prompt: direnv loads the recorded deployment and normalized chart path. Optional hostname, claim, native-version, TLS and dependency choices belong under `services.<instance>`. Omitted hostname derives from `dns.root`; default native version is 3.3.1. The selected chart must match the recorded package version. Render declarations from the same selected intent as runtime:
 
 ```bash
-HELM_INSTANCE=${INSTANCE//./\\.}
-VERSION="$PACKAGE_VERSION"
-INGRESS=$(yq -r '[.services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --set-string renderMode=connections \
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=connections \
   --show-only templates/connections.yaml > "$INSTALL_DIR/paperless-connections.yaml"
 PAPERLESS_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/paperless-connections.yaml")
 PAPERLESS_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/paperless-connections.yaml")
@@ -140,15 +136,15 @@ Require authoritative/public answers reaching this ingress before ACME issuance.
 
 ```bash
 TLS_SECRET=$(helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.ingress.enabled=true" --set-string renderMode=connections \
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=connections \
+  --set "operations.deployments.${DEPLOYMENT//./\\.}.ingressEnabled=true" \
   --show-only templates/connections.yaml |
   yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName')
 kubectl --context "$KUBE_CONTEXT" -n "$NS" create secret tls "$TLS_SECRET" \
   --cert="$INSTALL_DIR/tls/fullchain.pem" --key="$INSTALL_DIR/tls/key.pem"
 ```
 
-This offline lookup asks for the future route's TLS binding; it does not enable ingress or change VALUES. Preserve external ownership on subsequent upgrades. Disabling ingress omits access without disabling managed certificate preparation.
+This offline lookup asks for the future route's TLS binding; it does not change VALUES or apply an ingress. When the recorded deployment disables ingress, the explicit one-off render enables it solely to inspect a prospective external TLS binding. Preserve external ownership on subsequent upgrades. Disabling ingress omits access without disabling managed certificate preparation.
 
 ## Optional identity and backup
 
@@ -160,8 +156,7 @@ For a compatible external provider, select its supplied issuer, then render the 
 export OIDC_ISSUER=https://login.example.org/realms/acme
 yq -i '.services[strenv(INSTANCE)].oidc.issuer = strenv(OIDC_ISSUER)' "$VALUES"
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --set-string renderMode=connections \
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=connections \
   --show-only templates/connections.yaml > "$INSTALL_DIR/paperless-connections.yaml"
 PAPERLESS_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/paperless-connections.yaml")
 PAPERLESS_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/paperless-connections.yaml")
@@ -183,8 +178,7 @@ KC_INSTANCE=$(yq -er '.deployments[strenv(KC_DEPLOYMENT)].instance' "$VALUES")
 export KC_INSTANCE
 yq -i '.services[strenv(INSTANCE)].identityProvider = strenv(KC_INSTANCE)' "$VALUES"
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --set-string renderMode=connections \
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=connections \
   --show-only templates/connections.yaml > "$INSTALL_DIR/paperless-connections.yaml"
 PAPERLESS_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/paperless-connections.yaml")
 PAPERLESS_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/paperless-connections.yaml")
@@ -273,8 +267,7 @@ Use a dedicated initialized HTTPS Restic repository. For fresh initialization it
 export REPOSITORY_URL=rest:https://backup.example.org/paperless/
 yq -i '.services[strenv(INSTANCE)].backup.repository = strenv(REPOSITORY_URL)' "$VALUES"
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --set-string renderMode=connections \
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=connections \
   --show-only templates/connections.yaml > "$INSTALL_DIR/paperless-connections.yaml"
 PAPERLESS_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/paperless-connections.yaml")
 PAPERLESS_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/paperless-connections.yaml")
@@ -311,8 +304,8 @@ Render native configuration and add protected inputs without printing the result
 
 ```bash
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set-string renderMode=configuration --show-only templates/configuration.yaml > "$INSTALL_DIR/configuration.yaml"
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=configuration \
+  --show-only templates/configuration.yaml > "$INSTALL_DIR/configuration.yaml"
 CONFIG_SECRET=$(yq -er '.configuration[strenv(INSTANCE)].secretName' "$INSTALL_DIR/configuration.yaml")
 yq -o=json '.configuration[strenv(INSTANCE)]' "$INSTALL_DIR/configuration.yaml" > "$INSTALL_DIR/configuration.json"
 jq --rawfile secretKey "$INSTALL_DIR/protected/secret-key" \
@@ -349,11 +342,8 @@ Protected custody follows scope: `protected/secret-key`, `protected/oidc-client-
 ## Install and verify
 
 ```bash
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm install "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -392,13 +382,8 @@ if [ ! -d "$CHART" ]; then
   mv "$CHART_STAGE/bartl-paperless" "$CHART"
   rm -r "$CHART_STAGE"
 fi
-VERSION="$PACKAGE_VERSION"
-HELM_INSTANCE=${INSTANCE//./\\.}
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --set-string renderMode=connections \
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=connections \
   --show-only templates/connections.yaml > "$INSTALL_DIR/paperless-connections.yaml"
 PAPERLESS_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/paperless-connections.yaml")
 PAPERLESS_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/paperless-connections.yaml")
@@ -438,12 +423,11 @@ Monitor staging, overdue/failed requests, capture age and required independent r
 
 ## Apply changes to a running deployment
 
-Starting condition: a running, Ready deployment with capture/publication settled and no state-changing native work executing. Edit the intended retained configuration, then **Load retained context** again to refresh declarations and replica/ingress intent. Apply scheduling changes without changing run or routing intent:
+Starting condition: a running, Ready deployment with capture/publication settled and no state-changing native work executing. Edit the intended retained configuration, then **Load retained context** again to refresh declarations. Apply scheduling changes without changing run or routing intent:
 
 ```bash
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 ```
 
@@ -455,11 +439,8 @@ Resume first. Export needed logs before stop: cancellation deletes native Jobs/P
 
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 0' "$VALUES"
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Stopped --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -473,11 +454,8 @@ After a completed nonfailed stop, start the same retained deployment:
 
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 1' "$VALUES"
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -525,11 +503,8 @@ BACKUP_SCHEDULE=$(cat "$SOURCE_DIR/backup-schedule-before-operation")
 export BACKUP_SCHEDULE
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = false |
   .services[strenv(INSTANCE)].backup.schedule = ""' "$VALUES"
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -558,11 +533,8 @@ Require final capture inclusion and any required secondary protection. Then stop
 
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 0' "$VALUES"
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Stopped --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -575,7 +547,7 @@ Confirm all application/native workers gone and retirement enforced; preserve so
 
 ### Prepare the independent target
 
-Choose a fresh deployment/namespace and existing target cluster. Preserve logical identity and service settings. For native replacement upgrade only, set services.<instance>.version to 3.3.1 after source retirement; keep its original value for same-version recovery.
+Choose a fresh deployment/namespace and existing target cluster. Preserve logical identity and service settings. A replacement target inherits `services.<instance>.version` for same-version recovery; for the supported native upgrade, select 3.3.1 under only the target's `operations.deployments.<deployment>.version` after source retirement. Never change the source's native version just to prepare a target.
 
 ```bash
 {
@@ -609,14 +581,15 @@ cd "$TARGET_DIR"
 
 Wait for the next prompt. Keep `SOURCE_DIR` and the retained backup schedule through acceptance; source and target retain distinct context and operation intent.
 
+For a **3.3.0 → 3.3.1 replacement only**, record the target-native version before rendering or installing; omit this block for same-version recovery:
+
 ```bash
-VERSION="$PACKAGE_VERSION"
-HELM_INSTANCE=${INSTANCE//./\\.}
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
+yq -i '.operations.deployments[strenv(DEPLOYMENT)].version = "3.3.1"' "$VALUES"
+```
+
+```bash
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --set-string renderMode=connections \
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=connections \
   --show-only templates/connections.yaml > "$INSTALL_DIR/paperless-connections.yaml"
 PAPERLESS_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/paperless-connections.yaml")
 PAPERLESS_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/paperless-connections.yaml")
@@ -647,8 +620,7 @@ Refresh declarations after the selected destination, prepare scoped Secrets and 
 
 ```bash
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --set-string renderMode=connections \
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=connections \
   --show-only templates/connections.yaml > "$INSTALL_DIR/paperless-connections.yaml"
 PAPERLESS_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/paperless-connections.yaml")
 PAPERLESS_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/paperless-connections.yaml")
@@ -659,8 +631,8 @@ for pair in reader:backupReader writer:backupWriter; do
     --from-file="$INSTALL_DIR/repository/$directory/"
 done
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set-string renderMode=configuration --show-only templates/configuration.yaml > "$INSTALL_DIR/configuration.yaml"
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=configuration \
+  --show-only templates/configuration.yaml > "$INSTALL_DIR/configuration.yaml"
 CONFIG_SECRET=$(yq -er '.configuration[strenv(INSTANCE)].secretName' "$INSTALL_DIR/configuration.yaml")
 yq -o=json '.configuration[strenv(INSTANCE)]' "$INSTALL_DIR/configuration.yaml" > "$INSTALL_DIR/configuration.json"
 jq --rawfile secretKey "$INSTALL_DIR/protected/secret-key" \
@@ -685,8 +657,8 @@ Do not create a new bootstrap identity for imported state. For external TLS only
 
 ```bash
 TLS_SECRET=$(helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.ingress.enabled=true" --set-string renderMode=connections \
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=connections \
+  --set "operations.deployments.${DEPLOYMENT//./\\.}.ingressEnabled=true" \
   --show-only templates/connections.yaml |
   yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName')
 kubectl --context "$KUBE_CONTEXT" -n "$NS" create secret tls "$TLS_SECRET" \
@@ -710,11 +682,8 @@ dig @8.8.8.8 +short "$PAPERLESS_HOST" A
 The source is retired. Install with target routing still disabled:
 
 ```bash
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm install "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -738,8 +707,8 @@ export REVIEW_CIDR=203.0.113.10/32  # Replace with the authorized reviewer's act
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait ingress/paperless --for=delete --timeout=5m
 kubectl --context "$KUBE_CONTEXT" get ingress --all-namespaces
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.ingress.enabled=true" --set-string renderMode=connections \
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=connections \
+  --set "operations.deployments.${DEPLOYMENT//./\\.}.ingressEnabled=true" \
   --show-only templates/connections.yaml > "$INSTALL_DIR/review-connections.yaml"
 TLS_SECRET=$(yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName' "$INSTALL_DIR/review-connections.yaml")
 INGRESS_CLASS=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.ingressClass' "$INSTALL_DIR/review-connections.yaml")
@@ -806,11 +775,8 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" delete ingress/paperless-review --wai
 kubectl --context "$KUBE_CONTEXT" -n "$NS" delete middleware/paperless-review
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = true |
   .services[strenv(INSTANCE)].backup.schedule = strenv(BACKUP_SCHEDULE)' "$VALUES"
-INGRESS=true
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" \
-  --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 ```
 
 Verify ordinary access and the restored schedule before removing `"$SOURCE_DIR/backup-schedule-before-operation"`. Keep that temporary input independently available while recovery is unfinished; in another shell select the same source-input directory before activation.
@@ -828,8 +794,7 @@ BACKUP_SCHEDULE=$(cat "$INSTALL_DIR/backup-schedule-before-operation")
 export BACKUP_SCHEDULE
 yq -i '.services[strenv(INSTANCE)].backup.schedule = ""' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o yaml
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs
 ```
@@ -857,8 +822,7 @@ If this only republishes the retained export, the check fails: keep intake close
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 0' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=0" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Stopped --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs
 ```
@@ -868,11 +832,8 @@ Require confirmed drainage and a successful final capture, not an interrupted ca
 ```bash
 yq -i '.services[strenv(INSTANCE)].version = "3.3.1" |
   .operations.deployments[strenv(DEPLOYMENT)].replicas = 1' "$VALUES"
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -888,8 +849,7 @@ BACKUP_SCHEDULE=$(cat "$INSTALL_DIR/backup-schedule-before-operation")
 export BACKUP_SCHEDULE
 yq -i '.services[strenv(INSTANCE)].backup.schedule = strenv(BACKUP_SCHEDULE)' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 ```
 
 Verify the restored schedule and ordinary access, then remove `"$INSTALL_DIR/backup-schedule-before-operation"`. Retain it if the operation is interrupted.
@@ -906,11 +866,8 @@ Resume, export diagnostics and obtain current-generation Stopped with no applica
 
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 0' "$VALUES"
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Stopped --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -932,11 +889,8 @@ After successful finalization, with intact retained state and no failed transiti
 
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 1' "$VALUES"
-REPLICAS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].replicas, .services[strenv(INSTANCE)].replicas, 1] | map(select(. != null)) | .[0]' "$VALUES")
-INGRESS=$(yq -r '[.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled, .services[strenv(INSTANCE)].ingress.enabled, true] | map(select(. != null)) | .[0]' "$VALUES")
 helm install "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" -f "$VALUES" \
-  --set-string instance="$INSTANCE" --set-string "services.$HELM_INSTANCE.release=$VERSION" \
-  --set "services.$HELM_INSTANCE.replicas=$REPLICAS" --set "services.$HELM_INSTANCE.ingress.enabled=$INGRESS" --wait=legacy --timeout=5m
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -984,7 +938,9 @@ Where evidence is insufficient, keep affected access/processing closed and resol
 
 The selected archive ships the service interface and defaults. Supported inputs under services.<instance> include hostname, version, replicas, claims.{storage,database,broker,staging}, configurationSecret, bootstrapSecret, identityProvider or oidc.issuer, optional oidc clientId/providerId/name, ingress enabled/className/tlsSecret, tls managed/acmeServer and backup repository or endpoint, enabled, readerSecret/writerSecret, schedule/timeZone/drainSeconds. Omission restores defaults, lists replace and explicit false/zero remain effective. Unknown selected-service fields fail; unrelated installation entries remain untouched.
 
-Connection rendering exposes HTTPS, OIDC/backup requests, credential requirements/bindings and storage claims. Configuration rendering exposes configuration.<instance>.secretName/environment and whether a client secret is needed. Protected values are added locally, never to VALUES. Refresh derived resolved bindings after source choices change. The 0.2.0 chart accepts instance, not deployment; recipes project retained replicas/ingress intent explicitly.
+Connection rendering exposes HTTPS, OIDC/backup requests, credential requirements/bindings and storage claims. Configuration rendering exposes configuration.<instance>.secretName/environment and whether a client secret is needed. Protected values are added locally, never to VALUES. Refresh derived resolved bindings after source choices change. The unpublished 0.2.1 chart selects `deployments.<deployment>`, validates its namespace, release and package version against Helm, and applies only `operations.deployments.<deployment>.{version,replicas,ingressEnabled}` over the selected service/defaults. Native version is a service choice unless the selected target overrides it. Direct `instance` selection remains supported without a deployment record; published 0.2.0 does not implement deployment selection.
+
+When moving an existing 0.2.0 installation to 0.2.1, retain `services.<instance>` and its native version, update only the selected `packages.<package>.version` to the acquired chart, and keep source and replacement operation entries distinct. Remove a stale `services.<instance>.release` pin to 0.2.0 (or explicitly change it to the acquired chart version); otherwise the chart correctly rejects the mismatch. Do not copy operation overrides into the shared service or reuse a replacement target's intent for the source.
 
 Historical runtime tests and another namespace on one host do not qualify this revised sequence or provider-loss activation. Exact-artifact qualification results belong in the existing release/integration record, not a customer execution diary. Maintainer procedures follow below.
 
@@ -998,7 +954,7 @@ uv run --no-project python -m unittest discover -s tests -v
 node tests/chart.mjs
 ```
 
-The source-only backup declaration correction makes omission eligible for connection preparation while explicit false opts out. Released 0.2.0 still declares omission ineligible. Neither meaning enables standalone backup without a destination. The correction requires a new chart version and renewed affected qualification; do not repackage it as published 0.2.0.
+The local 0.2.1 candidate includes the backup declaration correction and deployment selection. Published 0.2.0 still declares backup omission ineligible and requires manual intent projection. Neither meaning enables standalone backup without a destination. Release and affected standalone qualification are outstanding; do not present this candidate as published 0.2.0 or a qualified registry artifact.
 
 Qualify exact immutable artifacts through first initialization with no store and an empty external store, ordinary restart without backup access, capture, independent reconstruction, new work/new recoverable point, 3.3.0-to-3.3.1 migration, publication retry, failed-transition isolation, stop and retained-storage reinstall. Inspect full repository/snapshot identities, original/version/rendition bytes, grants, workflow, search and fresh OIDC/TOTP. Browser/MFA and records review are separate from native Job success. Never clear markers to make qualification pass.
 

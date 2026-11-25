@@ -1,4 +1,5 @@
 {{- if eq .Values.renderMode "deployment" }}
+{{- $instance := (include "paperless.selection" . | fromYaml).instance }}
 {{- if ne .Release.Name "paperless" }}
 {{- fail "This package requires release name paperless and one installation per namespace" }}
 {{- end }}
@@ -15,7 +16,7 @@ metadata:
 spec:
   identity:
     installation: {{ .Values.installation | quote }}
-    instance: {{ .Values.instance | quote }}
+    instance: {{ $instance | quote }}
   replicas: {{ $service.replicas }}
   version: {{ $service.version | quote }}
   images:

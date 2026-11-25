@@ -1,4 +1,3 @@
 # Independent releases consume the same installation values file.
-instance: paperless
 renderMode: deployment
 services: {}
