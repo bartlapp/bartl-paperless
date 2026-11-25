@@ -43,7 +43,7 @@ The registry supplies immutable charts and images; local caches are disposable. 
 
 ## Configure a new deployment
 
-Choose unused deployment, service and package keys and a fresh namespace. These targeted assignments preserve unrelated installation entries. A replacement must retain the original instance instead.
+Choose unused deployment and service keys and a fresh namespace. Reuse a package key only when its recorded chart and version match the acquired artifact; otherwise choose an unused package key. These assignments preserve unrelated installation entries. A replacement must retain the original instance instead.
 
 ```bash
 {
@@ -52,15 +52,18 @@ export INSTANCE=paperless
 export NS=paperless-blue
 export RELEASE=paperless
 export PACKAGE=paperless
+yq -e '.packages[strenv(PACKAGE)] == null or
+  (.packages[strenv(PACKAGE)].version == strenv(PACKAGE_VERSION) and
+   .packages[strenv(PACKAGE)].chart == "oci://ghcr.io/bartlapp/bartl-paperless")' "$VALUES" >/dev/null
 yq -i '
   .deployments[strenv(DEPLOYMENT)] = {
     "instance": strenv(INSTANCE), "cluster": strenv(CLUSTER_ID),
     "namespace": strenv(NS), "release": strenv(RELEASE), "package": strenv(PACKAGE)
   } |
   .services[strenv(INSTANCE)] = {} |
-  .packages[strenv(PACKAGE)] = {
+  .packages[strenv(PACKAGE)] = (.packages[strenv(PACKAGE)] // {
     "version": strenv(PACKAGE_VERSION), "chart": "oci://ghcr.io/bartlapp/bartl-paperless"
-  }
+  })
 ' "$VALUES"
 DEPLOYMENT_DIR="$WORK_DIR/clusters/$CLUSTER_ID/applications/$INSTANCE"
 CLUSTER_ENV=../../.envrc
@@ -587,6 +590,10 @@ TARGET_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --untar --untardir "$TARGET_STAGE"
 export TARGET_PACKAGE_VERSION
 TARGET_PACKAGE_VERSION=$(helm show chart "$TARGET_STAGE/bartl-paperless" | yq -er '.version')
+MATCHING_PACKAGE=$(yq -o=json '.packages // {}' "$VALUES" |
+  jq -r --arg version "$TARGET_PACKAGE_VERSION" '[to_entries[] |
+    select(.value.chart == "oci://ghcr.io/bartlapp/bartl-paperless" and .value.version == $version) | .key][0] // empty')
+if [ -n "$MATCHING_PACKAGE" ]; then TARGET_PACKAGE="$MATCHING_PACKAGE"; fi
 ```
 
 ### Final capture and source retirement
@@ -658,12 +665,15 @@ export TARGET_NAMESPACE=paperless-green
 export SOURCE_DEPLOYMENT SOURCE_DIR
 INSTANCE=$(yq -er '.deployments[strenv(SOURCE_DEPLOYMENT)].instance' "$VALUES")
 export INSTANCE
+yq -e '.packages[strenv(TARGET_PACKAGE)] == null or
+  (.packages[strenv(TARGET_PACKAGE)].version == strenv(TARGET_PACKAGE_VERSION) and
+   .packages[strenv(TARGET_PACKAGE)].chart == "oci://ghcr.io/bartlapp/bartl-paperless")' "$VALUES" >/dev/null
 yq -i '.deployments[strenv(DEPLOYMENT)] = {
   "instance": strenv(INSTANCE), "cluster": strenv(TARGET_CLUSTER),
   "namespace": strenv(TARGET_NAMESPACE), "release": "paperless", "package": strenv(TARGET_PACKAGE)
-} | .packages[strenv(TARGET_PACKAGE)] = {
+} | .packages[strenv(TARGET_PACKAGE)] = (.packages[strenv(TARGET_PACKAGE)] // {
   "version": strenv(TARGET_PACKAGE_VERSION), "chart": "oci://ghcr.io/bartlapp/bartl-paperless"
-} | .operations.deployments[strenv(DEPLOYMENT)] = {"replicas": 1, "ingressEnabled": false} |
+}) | .operations.deployments[strenv(DEPLOYMENT)] = {"replicas": 1, "ingressEnabled": false} |
   .services[strenv(INSTANCE)].backup.schedule = ""' "$VALUES"
 TARGET_DIR="$WORK_DIR/clusters/$TARGET_CLUSTER/applications/$INSTANCE/deployments/$DEPLOYMENT"
 mkdir -p "$TARGET_DIR" "$WORK_DIR/packages/$TARGET_PACKAGE"
