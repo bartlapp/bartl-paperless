@@ -20,7 +20,7 @@ Before relying on the service, agree interruption/data loss, source retirement, 
 
 ## Select cluster access and obtain the release
 
-Use direnv-hooked Bash and the existing installation's cluster directory. For a missing deployment selector, follow [Base's adoption procedure](https://github.com/bartlapp/base-k3s/blob/main/README.md#adopt-a-missing-deployment-selector); refresh the root loader only if incompatible. For an equivalent externally supplied K3s cluster, use [supplied cluster access](https://github.com/bartlapp/base-k3s/blob/main/README.md#use-supplied-cluster-access); no Hetzner machine records are required.
+Use direnv-hooked Bash and the prepared installation's cluster directory. For an equivalent externally supplied K3s cluster, use the shared [supplied cluster access](https://github.com/bartlapp/bartl-app/blob/main/docs/operator-workstation.md#use-supplied-cluster-access) procedure; no Hetzner machine records are required.
 
 ```bash
 cd "${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation/clusters/cluster-1"
@@ -381,7 +381,7 @@ Through real HTTPS, log in locally and, when selected, with fresh OIDC/TOTP. Ing
 
 ### Load retained context
 
-In direnv-hooked Bash, enter the actual deployment directory; replacements use their nested `deployments/<deployment>` directory. For a missing selector, use Base's [one-time adoption procedure](https://github.com/bartlapp/base-k3s/blob/main/README.md#adopt-a-missing-deployment-selector).
+In direnv-hooked Bash, enter the actual retained deployment directory; replacements use their nested `deployments/<deployment>` directory.
 
 ```bash
 cd "${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation/clusters/cluster-1/applications/paperless"
@@ -726,7 +726,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc -o json > "$INSTALL_DIR/targe
 
 Inspect status.operation/status.operations and native Job results. Require the authorized repository/full snapshot, expected native version and independent PVC UIDs/backing volumes. Ready with an empty initialization is not recovery of expected history. Failure stays isolated; preserve diagnostics and use another independent empty target, never clear markers or replay an ambiguous import.
 
-For Base's single-node Traefik, run [Preserve client addresses for restricted access](https://github.com/bartlapp/base-k3s/blob/main/README.md#preserve-client-addresses-for-restricted-access) with this target cluster selected. It preserves the other cluster ingress settings. Then return here without changing the selected deployment.
+The target ingress must preserve real client addresses for the review allowlist. Base establishes this during provisioning; the administrator of an equivalent supplied cluster provides that behavior.
 
 Confirm source retirement and no ordinary route for this hostname. Create a separate, operator-owned review Ingress and namespace-local allowlist. Do not edit the controller-owned `paperless` Ingress; it must remain absent. The offline lookup below obtains TLS/class settings without enabling a route:
 
