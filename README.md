@@ -867,7 +867,10 @@ spec:
                 port:
                   number: 8000
 EOF
-curl --fail --silent --show-error --output /dev/null "$PAPERLESS_URL"
+# Wait for Traefik to install both the route and its certificate.
+# Each read-only attempt must pass certificate and hostname verification.
+curl --fail --silent --show-error --output /dev/null --max-time 10 \
+  --retry 30 --retry-delay 2 --retry-max-time 60 --retry-all-errors "$PAPERLESS_URL"
 ```
 
 Require trusted HTTPS from the reviewer address and HTTP 403 from an independent ordinary source, including a request with a forged `X-Forwarded-For` header naming the reviewer. With no `ipStrategy` configured, the allowlist uses the connection source address. Verify the deployed Middleware and other hostname routes if this fails; do not broaden the allowlist. Ordinary ingress and schedules stay disabled throughout review.
