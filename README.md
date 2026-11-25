@@ -1097,7 +1097,32 @@ OUT=/protected/paperless-candidate
 OUT="$OUT" bash build.sh
 ```
 
-Output contains three OCI image directories, a digest-pinned chart, image-values.yaml, image digests and SHA256SUMS. Qualify these exact bytes, retain them independently and publish from the builder without rebuilding. With authorized registry access in `REGISTRY_AUTH_FILE`, publish only absent version tags:
+Output contains three OCI image directories, a digest-pinned chart, image-values.yaml, image digests and SHA256SUMS. Retain these exact bytes through the [candidate custody procedure](https://github.com/bartlapp/bartl-app/blob/main/docs/how-to-bartlize.md#qualify-the-delivered-path), then qualify them without rebuilding. Candidate upload and stable publication must both be authorized; that authorization may cover the whole sequence.
+
+Before qualification, make the new images retrievable by their pinned digests without publishing the stable chart. With authorized registry access in `REGISTRY_AUTH_FILE`, select an unused candidate tag derived from this build's controller digest:
+
+```bash
+RELEASE=$(yq -r '.version' "$OUT/chart/Chart.yaml")
+CANDIDATE="candidate-$RELEASE-$(cut -d: -f2 "$OUT/paperless-controller.digest")"
+skopeo copy --authfile "$REGISTRY_AUTH_FILE" --preserve-digests \
+  "oci:$OUT/paperless-3.3.0" "docker://ghcr.io/bartlapp/bartl-paperless-runtime:3.3.0-$CANDIDATE"
+skopeo copy --authfile "$REGISTRY_AUTH_FILE" --preserve-digests \
+  "oci:$OUT/paperless-3.3.1" "docker://ghcr.io/bartlapp/bartl-paperless-runtime:3.3.1-$CANDIDATE"
+skopeo copy --authfile "$REGISTRY_AUTH_FILE" --preserve-digests \
+  "oci:$OUT/paperless-controller" "docker://ghcr.io/bartlapp/bartl-paperless-controller:$CANDIDATE"
+```
+
+Verify each registry manifest against its retained `.digest` and retain the chart/checksums and exact source identity in the package's draft release before relying on remote custody. Candidate qualification uses the ordinary operating procedures, with one explicit acquisition difference: at **Select cluster access and obtain the release**, replace only the registry-download block with:
+
+```bash
+mkdir -p "$WORK_DIR/packages"
+CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
+tar -xzf "$OUT/bartl-paperless-$RELEASE.tgz" -C "$CHART_STAGE"
+export PACKAGE_VERSION
+PACKAGE_VERSION=$(helm show chart "$CHART_STAGE/bartl-paperless" | yq -er '.version')
+```
+
+Continue at **Configure a new deployment**. This is candidate qualification, not public-release acceptance. Exercise the maintainer cases above, including fresh OIDC with the supplied CA bundle. Replacement selects the same retained candidate archive instead of downloading a stable chart; keep its native version transition and all retirement/acceptance checks unchanged. After qualification passes, publish the same images under unused release tags and the unchanged chart:
 
 ```bash
 RELEASE=$(yq -r '.version' "$OUT/chart/Chart.yaml")
