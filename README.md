@@ -20,7 +20,7 @@ Before relying on the service, agree interruption/data loss, source retirement, 
 
 ## Select cluster access and obtain the release
 
-Use direnv-hooked Bash and the existing installation's cluster directory. For an older Base context, first [refresh its loader](https://github.com/bartlapp/base-k3s/blob/main/README.md#refresh-an-existing-installations-context). For an equivalent externally supplied K3s cluster, use [supplied cluster access](https://github.com/bartlapp/base-k3s/blob/main/README.md#use-supplied-cluster-access); no Hetzner machine records are required.
+Use direnv-hooked Bash and the existing installation's cluster directory. For a missing deployment selector, follow [Base's adoption procedure](https://github.com/bartlapp/base-k3s/blob/main/README.md#adopt-a-missing-deployment-selector); refresh the root loader only if incompatible. For an equivalent externally supplied K3s cluster, use [supplied cluster access](https://github.com/bartlapp/base-k3s/blob/main/README.md#use-supplied-cluster-access); no Hetzner machine records are required.
 
 ```bash
 cd "${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation/clusters/cluster-1"
@@ -364,7 +364,7 @@ Through real HTTPS, log in locally and, when selected, with fresh OIDC/TOTP. Ing
 
 ### Load retained context
 
-In direnv-hooked Bash, enter the actual deployment directory; replacements use their nested `deployments/<deployment>` directory. For a missing selector, use Base's [one-time adoption procedure](https://github.com/bartlapp/base-k3s/blob/main/README.md#refresh-an-existing-installations-context).
+In direnv-hooked Bash, enter the actual deployment directory; replacements use their nested `deployments/<deployment>` directory. For a missing selector, use Base's [one-time adoption procedure](https://github.com/bartlapp/base-k3s/blob/main/README.md#adopt-a-missing-deployment-selector).
 
 ```bash
 cd "${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation/clusters/cluster-1/applications/paperless"
