@@ -41,6 +41,47 @@ func fixture(t *testing.T, objects ...client.Object) (*Reconciler, context.Conte
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&api.PaperlessApplication{}).WithObjects(objects...).Build()
 	return &Reconciler{Client: c, Reader: c, Scheme: s, Namespace: "test"}, context.Background()
 }
+func TestNativeConfigurationFilesReachApplicationAndJobs(t *testing.T) {
+	a := applicationFixture()
+	for _, version := range []string{"3.3.0", "3.3.1"} {
+		for _, kind := range []string{"application", "prepare", "capture", "inspect", "publish"} {
+			t.Run(version+"/"+kind, func(t *testing.T) {
+				pod := appPod(a, version, "")
+				if kind != "application" {
+					pod = jobFor(a, newOperation(a, kind, version, "Empty")).Spec.Template.Spec
+				}
+				wantConfiguration := kind != "inspect" && kind != "publish"
+				var mounted, supplied, environment bool
+				for _, volume := range pod.Volumes {
+					if volume.Name == "client-ca" {
+						supplied = volume.Secret != nil && volume.Secret.SecretName == a.Spec.ConfigurationSecret+"-client-ca" && volume.Secret.Optional != nil && *volume.Secret.Optional
+					}
+				}
+				for _, mount := range pod.Containers[0].VolumeMounts {
+					if mount.Name == "client-ca" {
+						mounted = mount.MountPath == "/configuration" && mount.ReadOnly && mount.SubPath == ""
+					}
+				}
+				for _, source := range pod.Containers[0].EnvFrom {
+					if source.SecretRef != nil && source.SecretRef.Name == a.Spec.ConfigurationSecret+"-client-ca" {
+						t.Fatal("CA file Secret must never be exported through EnvFrom")
+					}
+					if source.SecretRef != nil && source.SecretRef.Name == a.Spec.ConfigurationSecret {
+						environment = true
+					}
+				}
+				if mounted != wantConfiguration || supplied != wantConfiguration || environment != wantConfiguration {
+					t.Fatalf("native configuration handoff: mounted=%v supplied=%v environment=%v, want %v", mounted, supplied, environment, wantConfiguration)
+				}
+				for _, variable := range pod.Containers[0].Env {
+					if variable.Name == "REQUESTS_CA_BUNDLE" || variable.Name == "SSL_CERT_FILE" {
+						t.Fatalf("controller must not override optional native trust: %#v", variable)
+					}
+				}
+			})
+		}
+	}
+}
 func owner(t *testing.T, r *Reconciler, a client.Object, b client.Object) {
 	t.Helper()
 	if err := controllerutil.SetControllerReference(a, b, r.Scheme); err != nil {
@@ -341,12 +382,13 @@ func TestClaimCollisionDoesNotAcquireOtherClaims(t *testing.T) {
 func TestJobAndAppCredentialAndEntrypointBoundary(t *testing.T) {
 	a := applicationFixture()
 	a.Spec.Backup.ReaderSecret = "reader"
+	a.Spec.Backup.WriterSecret = "writer"
 	p := appPod(a, "3.3.1", "")
 	if len(p.Containers[0].Command) != 0 || p.EnableServiceLinks == nil || *p.EnableServiceLinks {
 		t.Fatal("ordinary app lost /init or allowed Service env collision")
 	}
 	for _, v := range p.Volumes {
-		if v.Secret != nil {
+		if v.Secret != nil && (v.Secret.SecretName == a.Spec.Backup.ReaderSecret || v.Secret.SecretName == a.Spec.Backup.WriterSecret) {
 			t.Fatal("ordinary app mounted backup credentials")
 		}
 	}
@@ -365,7 +407,7 @@ func TestJobAndAppCredentialAndEntrypointBoundary(t *testing.T) {
 	}
 	prepare := jobFor(a, newOperation(a, "prepare", "3.3.1", "Existing"))
 	for _, v := range prepare.Spec.Template.Spec.Volumes {
-		if v.Secret != nil {
+		if v.Secret != nil && (v.Secret.SecretName == a.Spec.Backup.ReaderSecret || v.Secret.SecretName == a.Spec.Backup.WriterSecret) {
 			t.Fatal("existing preparation mounted recovery credentials")
 		}
 	}

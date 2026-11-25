@@ -10,6 +10,8 @@
   "configuration" (dict "sources" (list "generated" "external" "recovered") "keys" (list "PAPERLESS_SECRET_KEY" "PAPERLESS_DBPASS" "PAPERLESS_URL") "requiredFor" (list "nativeConfiguration"))
 }}
 {{- $bindings := dict "configuration" (dict "secretName" $service.configurationSecret) }}
+{{- $_ := set $requirements "clientCA" (dict "sources" (list "external" "recovered") "keys" (list "ca-bundle.pem") "requiredFor" (list "customClientTrust")) }}
+{{- $_ := set $bindings "clientCA" (dict "secretName" (printf "%s-client-ca" $service.configurationSecret) "key" "ca-bundle.pem") }}
 {{- if $service.bootstrapSecret }}
   {{- $_ := set $requirements "bootstrap" (dict "sources" (list "generated" "external") "keys" (list "PAPERLESS_ADMIN_USER" "PAPERLESS_ADMIN_PASSWORD") "requiredFor" (list "freshInitialization")) }}
   {{- $_ := set $bindings "bootstrap" (dict "secretName" $service.bootstrapSecret) }}

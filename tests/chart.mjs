@@ -45,6 +45,20 @@ check('one shared file selects only the independent Paperless release', () => {
   assert.equal(spec.ingress.enabled, true);
   assert.equal(docs.some(d => d.kind === 'Secret'), false);
 });
+check('optional client CA binding is separate from environment configuration', () => {
+  const v = base();
+  for (const secretName of ['paperless-configuration', 'selected-config']) {
+    if (secretName !== 'paperless-configuration') selected(v).configurationSecret = secretName;
+    const d = declaration(v);
+    assert.deepEqual(d.credentials.bindings.paperless.clientCA, {secretName: `${secretName}-client-ca`, key: 'ca-bundle.pem'});
+    assert.deepEqual(d.credentials.requirements.paperless.clientCA, {sources: ['external', 'recovered'], keys: ['ca-bundle.pem'], requiredFor: ['customClientTrust']});
+    assert.equal(deployment(v).spec.configurationSecret, secretName);
+    const config = configuration(v);
+    assert.equal(config.secretName, secretName);
+    assert.equal('REQUESTS_CA_BUNDLE' in config.environment, false);
+    assert.equal('ca-bundle.pem' in config.environment, false);
+  }
+});
 check('custom instance, map overrides and explicit zero and false survive derivation', () => {
   const v = base(); v.instance = 'records'; v.services = {paperless: 'unselected', records: {replicas: 0, claims: {storage: 'records-data'}, ingress: {enabled: false}, images: {redis: 'example.org/redis@sha256:abc'}, controller: {imagePullPolicy: 'Always'}}};
   const {spec, docs} = deployment(v);

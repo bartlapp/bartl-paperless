@@ -39,7 +39,7 @@ export PACKAGE_VERSION
 PACKAGE_VERSION=$(helm show chart "$CHART_STAGE/bartl-paperless" | yq -er '.version')
 ```
 
-The registry supplies immutable charts and images; local caches are disposable. Retain configuration, the Paperless key, identity-client inputs and repository credentials independently of the source. The **local, unpublished 0.2.1 candidate** adds deployment selection and corrects backup connection eligibility. Published 0.2.0 does not implement this procedure's deployment interface; use an independently qualified 0.2.1-or-newer release before following it against a live installation.
+The registry supplies immutable charts and images; local caches are disposable. Retain configuration, the Paperless key, identity-client inputs and repository credentials independently of the source. The **local, unpublished 0.2.1 candidate** adds deployment selection, corrects backup connection eligibility and mounts native client CA configuration. Published 0.2.0 does not implement this procedure's deployment interface. The CA handoff also requires a newly built, pinned controller image; the candidate chart's old controller digest does not implement it. The existing runtime supports the native Requests setting. Use independently qualified artifacts before following this procedure against a live installation.
 
 ## Configure a new deployment
 
@@ -300,6 +300,12 @@ For fresh initialization only, generate the independent Paperless key and databa
 )
 ```
 
+### Custom client CA trust
+
+For optional private/staging issuer trust, retain a complete PEM root bundle at `$INSTALL_DIR/protected/client-ca/ca-bundle.pem` before rendering configuration. This selects the native Requests `REQUESTS_CA_BUNDLE` for OIDC discovery, token exchange and userinfo. It **replaces**, rather than extends, Requests' certifi roots: include every root these clients must trust, including public roots when needed. Without that file, configuration generation leaves ordinary runtime trust unchanged. Do not set verification-disabling options or modify workstation/system trust.
+
+The separate optional client-CA Secret carries `ca-bundle.pem`; the configuration Secret contains only `REQUESTS_CA_BUNDLE=/configuration/ca-bundle.pem`. The chart declares its clientCA binding, derived from the configuration Secret name. Keeping PEM bytes out of the EnvFrom Secret avoids exporting a complete root bundle as an oversized environment variable. The controller mounts the CA Secret read-only for the application and native configuration-consuming Jobs. Missing/unreadable selected paths and invalid/untrusted bundles fail native HTTPS requests, never fall back to unverified TLS. This is application client configuration, not Paperless identity, its ingress certificate, Restic trust or library backup state. Retain the file independently with installation inputs, restore it before regenerating configuration on recovery, and retain both Secrets on reinstall. Restart the application after changing trust configuration.
+
 Render native configuration and add protected inputs without printing the result. This handles local login, external OIDC and composed OIDC through the same package interface:
 
 ```bash
@@ -318,6 +324,17 @@ if jq -e '.oidc.clientSecretRequired == true' "$INSTALL_DIR/configuration.json" 
       (fromjson | .openid_connect.APPS[0].secret = ($clientSecret | rtrimstr("\n")) | tojson)
   ' "$INSTALL_DIR/protected/environment.json" > "$INSTALL_DIR/protected/environment-oidc.json"
   mv "$INSTALL_DIR/protected/environment-oidc.json" "$INSTALL_DIR/protected/environment.json"
+fi
+if [ -e "$INSTALL_DIR/protected/client-ca/ca-bundle.pem" ] || [ -L "$INSTALL_DIR/protected/client-ca/ca-bundle.pem" ]; then
+  test -s "$INSTALL_DIR/protected/client-ca/ca-bundle.pem"
+  CLIENT_CA_SECRET=$(yq -er '.credentials.bindings[strenv(INSTANCE)].clientCA.secretName' "$INSTALL_DIR/paperless-connections.yaml")
+  kubectl --context "$KUBE_CONTEXT" -n "$NS" create secret generic "$CLIENT_CA_SECRET" \
+    --from-file=ca-bundle.pem="$INSTALL_DIR/protected/client-ca/ca-bundle.pem" --dry-run=client -o yaml | \
+    kubectl --context "$KUBE_CONTEXT" apply --server-side --field-manager=paperless-preparation -f -
+  jq '
+    . + {REQUESTS_CA_BUNDLE: "/configuration/ca-bundle.pem"}
+  ' "$INSTALL_DIR/protected/environment.json" > "$INSTALL_DIR/protected/environment-ca.json"
+  mv "$INSTALL_DIR/protected/environment-ca.json" "$INSTALL_DIR/protected/environment.json"
 fi
 jq -n --arg name "$CONFIG_SECRET" --arg namespace "$NS" \
   --slurpfile environment "$INSTALL_DIR/protected/environment.json" '{
@@ -646,6 +663,17 @@ if jq -e '.oidc.clientSecretRequired == true' "$INSTALL_DIR/configuration.json" 
   ' "$INSTALL_DIR/protected/environment.json" > "$INSTALL_DIR/protected/environment-oidc.json"
   mv "$INSTALL_DIR/protected/environment-oidc.json" "$INSTALL_DIR/protected/environment.json"
 fi
+if [ -e "$INSTALL_DIR/protected/client-ca/ca-bundle.pem" ] || [ -L "$INSTALL_DIR/protected/client-ca/ca-bundle.pem" ]; then
+  test -s "$INSTALL_DIR/protected/client-ca/ca-bundle.pem"
+  CLIENT_CA_SECRET=$(yq -er '.credentials.bindings[strenv(INSTANCE)].clientCA.secretName' "$INSTALL_DIR/paperless-connections.yaml")
+  kubectl --context "$KUBE_CONTEXT" -n "$NS" create secret generic "$CLIENT_CA_SECRET" \
+    --from-file=ca-bundle.pem="$INSTALL_DIR/protected/client-ca/ca-bundle.pem" --dry-run=client -o yaml | \
+    kubectl --context "$KUBE_CONTEXT" apply --server-side --field-manager=paperless-preparation -f -
+  jq '
+    . + {REQUESTS_CA_BUNDLE: "/configuration/ca-bundle.pem"}
+  ' "$INSTALL_DIR/protected/environment.json" > "$INSTALL_DIR/protected/environment-ca.json"
+  mv "$INSTALL_DIR/protected/environment-ca.json" "$INSTALL_DIR/protected/environment.json"
+fi
 jq -n --arg name "$CONFIG_SECRET" --arg namespace "$NS" \
   --slurpfile environment "$INSTALL_DIR/protected/environment.json" '{
     apiVersion: "v1", kind: "Secret", type: "Opaque",
@@ -885,7 +913,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc,secrets
 
 Finalization drains dependencies and releases only this CR's claim bindings. Claims/data/Secrets survive. Do not bypass finalizers or delete controller/namespace first. A timeout is not authorization to force deletion.
 
-After successful finalization, with intact retained state and no failed transition marker or competing owner, reinstall without recreating PVCs or credentials. In a fresh shell first [load retained context](#load-retained-context), skipping live inspection of the deliberately deleted application:
+After successful finalization, with intact retained state and no failed transition marker or competing owner, reinstall without recreating PVCs or credentials, including the separate client-CA Secret when custom trust was selected. If configuration Secrets were lost, restore retained inputs and repeat [configuration preparation](#custom-client-ca-trust), not fresh identity generation, before installation. In a fresh shell first [load retained context](#load-retained-context), skipping live inspection of the deliberately deleted application:
 
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 1' "$VALUES"
@@ -950,9 +978,11 @@ The README owns operating recipes. Run offline regressions with:
 
 ```bash
 go test ./...
-uv run --no-project python -m unittest discover -s tests -v
+uv run --no-project --with requests==2.33.0 --with cryptography==50.0.0 python -m unittest discover -s tests -v
 node tests/chart.mjs
 ```
+
+The client-CA regression uses an ephemeral local HTTPS server to check native Requests GET/POST, unchanged default rejection, hostname enforcement and missing/invalid bundles. Its dependency pins match the supported 3.3.1 upstream lock. It does not qualify a running OIDC service; repeat fresh OIDC login against the selected complete bundle using the exact candidate controller/runtime artifacts.
 
 The local 0.2.1 candidate includes the backup declaration correction and deployment selection. Published 0.2.0 still declares backup omission ineligible and requires manual intent projection. Neither meaning enables standalone backup without a destination. Release and affected standalone qualification are outstanding; do not present this candidate as published 0.2.0 or a qualified registry artifact.
 
@@ -1005,3 +1035,4 @@ New package public visibility needs explicit approval. Verify anonymous chart/im
 - [Exporter](https://github.com/paperless-ngx/paperless-ngx/blob/c4d1b0c7325ea8782d87c64b6738ac39d313df2e/src/documents/management/commands/document_exporter.py) and [importer](https://github.com/paperless-ngx/paperless-ngx/blob/c4d1b0c7325ea8782d87c64b6738ac39d313df2e/src/documents/management/commands/document_importer.py).
 - [Token endpoint](https://github.com/paperless-ngx/paperless-ngx/blob/c4d1b0c7325ea8782d87c64b6738ac39d313df2e/src/paperless/views.py) and [inherited token acquisition](https://github.com/encode/django-rest-framework/blob/3.18.1/rest_framework/authtoken/views.py).
 - [Native folder preparation](https://github.com/paperless-ngx/paperless-ngx/blob/c4d1b0c7325ea8782d87c64b6738ac39d313df2e/docker/rootfs/etc/s6-overlay/s6-rc.d/init-folders/run) and [nonrotating token administration](https://github.com/encode/django-rest-framework/blob/3.18.1/rest_framework/authtoken/management/commands/drf_create_token.py).
+- [Paperless's pinned dependencies](https://github.com/paperless-ngx/paperless-ngx/blob/c4d1b0c7325ea8782d87c64b6738ac39d313df2e/uv.lock): django-allauth 65.16.1 and Requests 2.33.0. Allauth's [OIDC discovery/userinfo](https://github.com/pennersr/django-allauth/blob/65.16.1/allauth/socialaccount/providers/openid_connect/views.py), [token client](https://github.com/pennersr/django-allauth/blob/65.16.1/allauth/socialaccount/providers/oauth2/client.py) and [session factory](https://github.com/pennersr/django-allauth/blob/65.16.1/allauth/socialaccount/adapter.py) use Requests sessions. Requests' [environment selection](https://github.com/psf/requests/blob/v2.33.0/src/requests/sessions.py) and [TLS adapter](https://github.com/psf/requests/blob/v2.33.0/src/requests/adapters.py) select the supplied bundle instead of default roots and retain certificate/hostname verification; `SSL_CERT_FILE` alone is not the Requests handoff.

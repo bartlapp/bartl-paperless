@@ -15,6 +15,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"slices"
 	"strconv"
 )
 
@@ -69,7 +70,7 @@ func (r *Reconciler) owned(ctx context.Context, a *api.PaperlessApplication, obj
 	return err
 }
 func appPod(a *api.PaperlessApplication, version, operation string) corev1.PodSpec {
-	mounts := []corev1.VolumeMount{{Name: "storage", MountPath: "/state"}, {Name: "storage", MountPath: "/usr/src/paperless/data", SubPath: "data"}, {Name: "storage", MountPath: "/usr/src/paperless/media", SubPath: "media"}, {Name: "storage", MountPath: "/usr/src/paperless/consume", SubPath: "consume"}, {Name: "staging", MountPath: "/staging"}}
+	mounts := []corev1.VolumeMount{{Name: "storage", MountPath: "/state"}, {Name: "storage", MountPath: "/usr/src/paperless/data", SubPath: "data"}, {Name: "storage", MountPath: "/usr/src/paperless/media", SubPath: "media"}, {Name: "storage", MountPath: "/usr/src/paperless/consume", SubPath: "consume"}, {Name: "staging", MountPath: "/staging"}, {Name: "client-ca", MountPath: "/configuration", ReadOnly: true}}
 	return corev1.PodSpec{
 		EnableServiceLinks:            pointer(false),
 		ServiceAccountName:            "paperless-native",
@@ -78,6 +79,7 @@ func appPod(a *api.PaperlessApplication, version, operation string) corev1.PodSp
 		Volumes: []corev1.Volume{
 			{Name: "storage", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: a.Spec.Claims.Storage}}},
 			{Name: "staging", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: a.Spec.Claims.Staging}}},
+			{Name: "client-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: a.Spec.ConfigurationSecret + "-client-ca", Optional: pointer(true)}}},
 		},
 		InitContainers: []corev1.Container{{
 			Name: "directories", Image: image(a, version),
@@ -277,6 +279,8 @@ func jobFor(a *api.PaperlessApplication, op *api.Operation) *batchv1.Job {
 		optional = true
 		pod.Containers[0].EnvFrom = nil
 		pod.Containers[0].Env = append(pod.Containers[0].Env, corev1.EnvVar{Name: "PAPERLESS_DBPASS", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: a.Spec.ConfigurationSecret}, Key: "PAPERLESS_DBPASS"}}})
+		pod.Volumes = slices.DeleteFunc(pod.Volumes, func(v corev1.Volume) bool { return v.Name == "client-ca" })
+		pod.Containers[0].VolumeMounts = slices.DeleteFunc(pod.Containers[0].VolumeMounts, func(v corev1.VolumeMount) bool { return v.Name == "client-ca" })
 	}
 	if op.Kind == "publish" {
 		secret = a.Spec.Backup.WriterSecret
