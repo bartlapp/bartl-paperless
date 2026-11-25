@@ -1079,6 +1079,51 @@ The local 0.2.1 candidate includes the backup declaration correction and deploym
 
 Qualify exact immutable artifacts through first initialization with no store and an empty external store, ordinary restart without backup access, capture, independent reconstruction, new work/new recoverable point, 3.3.0-to-3.3.1 migration, publication retry, failed-transition isolation, stop and retained-storage reinstall. Inspect full repository/snapshot identities, original/version/rendition bytes, grants, workflow, search and fresh OIDC/TOTP. Browser/MFA and records review are separate from native Job success. Never clear markers to make qualification pass.
 
+For the repeatable library fixture, start with an empty disposable library and an already provisioned non-administrator OIDC user. Keep the selected deployment context. The preparer uses the native API to create a reader group, a valid denied user with no document grant, a document-added assignment workflow, and one synthetic root with a second file version. It retains originals and native archive PDF renditions separately; it does not alter application startup or capture behavior.
+
+```bash
+export PAPERLESS_READER=oidc-proof  # The actual native username from the fresh OIDC login
+export LIBRARY_WORK="$WORK_DIR/.access/$INSTANCE"
+mkdir -p "$LIBRARY_WORK"
+PAPERLESS_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/paperless-connections.yaml")
+PAPERLESS_ADMIN=$(cat "$INSTALL_DIR/protected/bootstrap-user")
+kubectl --context "$KUBE_CONTEXT" -n "$NS" exec deployment/paperless -c paperless -- \
+  uv run --no-project python manage.py drf_create_token "$PAPERLESS_ADMIN" |
+  jq -Rer 'select(startswith("Generated token ")) |
+    capture("^Generated token (?<token>[0-9a-f]+) for user ").token' > "$LIBRARY_WORK/admin-token"
+jq -n --arg url "$PAPERLESS_URL" --arg token "$LIBRARY_WORK/admin-token" \
+  --arg reader "$PAPERLESS_READER" --arg output "$LIBRARY_WORK/library" \
+  '{url:$url,adminTokenFile:$token,readerUsername:$reader,outputDir:$output}' > "$LIBRARY_WORK/library-setup.json"
+```
+
+From the package source checkout, with Node.js 22 and the selected validating CA bundle supplied through `NODE_EXTRA_CA_CERTS` when needed:
+
+```bash
+node tests/prepare-library.mjs "$LIBRARY_WORK/library-setup.json"
+```
+
+The output directory must be new. An interrupted preparation retains native resource IDs in `creation.json`; inspect those resources before cleanup or retry, rather than rerunning mutations over partial state. The script deliberately refuses existing documents, groups, tags, workflows or reader grants. Return to the selected deployment shell and supply the native API tokens:
+
+```bash
+for actor in admin reader denied; do
+  if [ "$actor" = admin ]; then
+    username=$(cat "$INSTALL_DIR/protected/bootstrap-user")
+  else
+    username=$(jq -er --arg actor "$actor" '.[$actor]' "$LIBRARY_WORK/library/usernames.json")
+  fi
+  kubectl --context "$KUBE_CONTEXT" -n "$NS" exec deployment/paperless -c paperless -- \
+    uv run --no-project python manage.py drf_create_token "$username" |
+    jq -Rer 'select(startswith("Generated token ")) |
+      capture("^Generated token (?<token>[0-9a-f]+) for user ").token' > "$LIBRARY_WORK/token"
+  jq --arg actor "$actor" --rawfile token "$LIBRARY_WORK/token" \
+    '.[$actor] = ($token | rtrimstr("\n"))' "$LIBRARY_WORK/library/tokens.json" > "$LIBRARY_WORK/library/tokens.new.json"
+  mv "$LIBRARY_WORK/library/tokens.new.json" "$LIBRARY_WORK/library/tokens.json"
+done
+rm "$LIBRARY_WORK/token"
+```
+
+Use the generated `library/library-inputs.json` for the checker below. Baseline it once after preparation; do not regenerate its expected state merely to pass a transition. After reconstruction, reissue these native tokens against the selected target because native import excludes them. Keep the original fixture files and expected state for comparison. New work belongs to a subsequent explicitly selected baseline and recovery point.
+
 Synthetic-library checks use:
 
 ```bash
