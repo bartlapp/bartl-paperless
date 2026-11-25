@@ -193,7 +193,13 @@ yq -i '.resolved.oidc.bindings[strenv(INSTANCE)] = {
 
 The resolved provider binding must match `identityProvider`. Refresh it when provider choices change.
 
-Authenticate and inspect the provider's realms and the declared client specification:
+If this provider's HTTPS endpoint needs a supplied private/staging root, select its complete trusted PEM bundle for native curl in this shell before the commands below:
+
+```bash
+export CURL_CA_BUNDLE=/absolute/path/to/supplied/operator-ca-bundle.pem
+```
+
+Otherwise keep curl's default trust. This does not configure Paperless runtime trust; supply that separately under [custom client CA trust](#custom-client-ca-trust). Never disable TLS verification. Authenticate and inspect the provider's realms and declared client:
 
 ```bash
 ADMIN_DIR="$INSTALL_DIR/protected/keycloak-admin"
@@ -261,7 +267,11 @@ Independently retain the client secret. Configure intended users and TOTP throug
 
 ### External backup inputs
 
-Use a dedicated initialized HTTPS Restic repository. For fresh initialization it must contain no matching application history; existing history belongs in recovery with the retained Paperless key. [Restic's recipe](https://github.com/bartlapp/bartl-restic/blob/main/README.md#connect-an-application) supplies a compatible endpoint and scoped input files, but any compatible service suffices.
+Choose one repository source below: a direct compatible endpoint or an existing composed Restic provider. Both require a dedicated initialized HTTPS Restic repository. For fresh initialization it must contain no matching application history; existing history belongs in recovery with the retained Paperless key.
+
+#### Select an external repository
+
+Use the supplied endpoint:
 
 ```bash
 export REPOSITORY_URL=rest:https://backup.example.org/paperless/
@@ -273,7 +283,36 @@ PAPERLESS_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTA
 PAPERLESS_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/paperless-connections.yaml")
 ```
 
-Supply repository/reader/ and repository/writer/ under INSTALL_DIR, each with password (the same repository encryption key), username, restPassword and optional ca.crt. If retained under the older protected/backup layout, restore those files here; do not regenerate them. Reader may manage native locks, not backup contents; writer is append-only. Admin credentials stay with the backup service. Create runtime copies:
+#### Select a composed Restic repository
+
+Instead of the direct URL block, use a provider already operated through its [own release procedure](https://github.com/bartlapp/bartl-restic/blob/main/README.md). Starting condition: no direct `backup.repository` override and an admitted dedicated repository. Read its current declaration file:
+
+```bash
+export RESTIC_DEPLOYMENT=restic
+export RESTIC_CONNECTIONS="$WORK_DIR/clusters/cluster-1/applications/restic/restic-connections.yaml"
+export REPOSITORY_NAME=paperless
+RESTIC_INSTANCE=$(yq -er '.deployments[strenv(RESTIC_DEPLOYMENT)].instance' "$VALUES")
+export RESTIC_INSTANCE
+BACKUP_REPOSITORY=$(yq -er '.backup.providers[strenv(RESTIC_INSTANCE)].repositories[strenv(REPOSITORY_NAME)].repository' "$RESTIC_CONNECTIONS")
+export BACKUP_REPOSITORY
+yq -i '.services[strenv(INSTANCE)].backup.endpoint = strenv(RESTIC_INSTANCE) |
+  .resolved.backup.bindings[strenv(INSTANCE)] = {
+    "endpoint": strenv(RESTIC_INSTANCE), "repository": strenv(BACKUP_REPOSITORY)
+  }' "$VALUES"
+helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
+  --set-string deployment="$DEPLOYMENT" --set-string renderMode=connections \
+  --show-only templates/connections.yaml > "$INSTALL_DIR/paperless-connections.yaml"
+PAPERLESS_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/paperless-connections.yaml")
+PAPERLESS_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/paperless-connections.yaml")
+```
+
+Declarations select the repository; they do not create it or prove its protection. Continue with the same credential handoff below.
+
+#### Supply repository credentials
+
+For either selection, [Restic's application handoff](https://github.com/bartlapp/bartl-restic/blob/main/README.md#connect-an-application) supplies compatible files; equivalent external credentials also suffice.
+
+Supply repository/reader/ and repository/writer/ under INSTALL_DIR, each with password (the same repository encryption key), username, restPassword and optional ca.crt. Restore the retained files for existing history; do not regenerate them. Reader may manage native locks, not backup contents; writer is append-only. Admin credentials stay with the backup service. Create runtime copies:
 
 ```bash
 for pair in reader:backupReader writer:backupWriter; do
@@ -306,7 +345,9 @@ For optional private/staging issuer trust, retain a complete PEM root bundle at 
 
 The separate optional client-CA Secret carries `ca-bundle.pem`; the configuration Secret contains only `REQUESTS_CA_BUNDLE=/configuration/ca-bundle.pem`. The chart declares its clientCA binding, derived from the configuration Secret name. Keeping PEM bytes out of the EnvFrom Secret avoids exporting a complete root bundle as an oversized environment variable. The controller mounts the CA Secret read-only for the application and native configuration-consuming Jobs. Missing/unreadable selected paths and invalid/untrusted bundles fail native HTTPS requests, never fall back to unverified TLS. This is application client configuration, not Paperless identity, its ingress certificate, Restic trust or library backup state. Retain the file independently with installation inputs, restore it before regenerating configuration on recovery, and retain both Secrets on reinstall. Restart the application after changing trust configuration.
 
-Render native configuration and add protected inputs without printing the result. This handles local login, external OIDC and composed OIDC through the same package interface:
+### Render configuration
+
+Starting condition: the selected chart and current declarations are available, together with the deployment's retained application key, database password and any OIDC/client-CA inputs. For an existing deployment, [prepare the chart-backed operation](#prepare-a-chart-backed-operation) first. This procedure creates or updates configuration only; it does not generate identity or bootstrap credentials. Render native configuration and add protected inputs without printing the result:
 
 ```bash
 helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
@@ -343,7 +384,9 @@ jq -n --arg name "$CONFIG_SECRET" --arg namespace "$NS" \
   }' | kubectl --context "$KUBE_CONTEXT" apply --server-side --field-manager=paperless-preparation -f -
 ```
 
-For fresh initialization with the default bootstrap binding, create its Secret. If bootstrapSecret was deliberately disabled, skip this block and use the selected native account-creation procedure:
+### Create the bootstrap Secret
+
+For fresh initialization with the default bootstrap binding, create its Secret. When rendering configuration for an existing or recovered deployment, stop at the end of [configuration rendering](#render-configuration); do not repeat this first-time step. If bootstrapSecret was deliberately disabled, skip this block and create the first administrator [after installation](#create-an-administrator-without-bootstrap):
 
 ```bash
 BOOTSTRAP_SECRET=$(yq -er '.credentials.bindings[strenv(INSTANCE)].bootstrap.secretName' "$INSTALL_DIR/paperless-connections.yaml")
@@ -355,6 +398,17 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" create secret generic "$BOOTSTRAP_SEC
 Keep protected files mode 0600, outside Git and independently available. The bootstrap account applies only to an empty installation, never imported state. Do not add controller-owned topology or custom-init/consume scripts to the configuration Secret. Import restores Paperless accounts, not the identity provider; retain that provider and client independently.
 
 Protected custody follows scope: `protected/secret-key`, `protected/oidc-client-secret` and `repository/{reader,writer}` identify the logical application and survive replacement. `protected/database-password`, bootstrap inputs and externally supplied `tls/` files serve the selected deployment; restore the required original inputs during recovery rather than running fresh generation. `protected/environment.json` is regenerated from those inputs. Keycloak administrator files are preparation-only, never application runtime credentials.
+
+### Change client CA trust
+
+Starting condition: a running deployment with no executing capture or failed transition. Load retained context and [prepare the chart-backed operation](#prepare-a-chart-backed-operation). Replace the retained `protected/client-ca/ca-bundle.pem` with the intended complete root bundle, or remove that selected file to return to native default trust. Repeat [configuration rendering](#render-configuration), then restart the application so native clients reload configuration:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout restart deployment/paperless
+kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status deployment/paperless --timeout=10m
+```
+
+Verify a fresh OIDC browser login through discovery, token exchange and userinfo when OIDC is selected. Startup alone does not establish client trust. This changes neither ingress TLS nor Restic CA inputs.
 
 ## Install and verify
 
@@ -375,7 +429,20 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
 
 Require current-generation Ready and status.version matching the intended native version. Helm only waits for controller infrastructure. Startup observes owned state; absence selects the latest complete matching point, same-version import and supported migration. Lookup/integrity/identity failures never mean empty state. Existing-state restart needs no backup access.
 
-Through real HTTPS, log in locally and, when selected, with fresh OIDC/TOTP. Ingest a synthetic PDF, await OCR/processing, search title/text and download the original. Check used versions/renditions, workflow, reader grants and denied access. [OIDC, MFA and token recovery](#oidc-mfa-and-token-recovery) lists the native reader permissions.
+### Create an administrator without bootstrap
+
+Only for a freshly initialized library where `bootstrapSecret` was deliberately disabled and no administrator exists, run Paperless's native interactive command after Ready:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" -n "$NS" exec -it deployment/paperless -c paperless -- \
+  uv run --no-project python manage.py createsuperuser
+```
+
+Retain the selected administrator credentials through the installation's protected channel. This is not a recovery/reset step; imported accounts already exist.
+
+### Verify useful behavior
+
+Through real HTTPS, verify the installation's agreed useful behavior: local login or the selected OIDC login, document intake/processing, search and original download. Check the grants and workflows actually used by this installation. Verify fresh provider MFA where selected. [OIDC, MFA and token recovery](#oidc-mfa-and-token-recovery) lists the native reader permissions. The full synthetic-library matrix belongs to [package qualification](#maintainer-procedures-and-evidence), not every installation or restart.
 
 ## Resume an existing deployment
 
@@ -387,11 +454,28 @@ In direnv-hooked Bash, enter the actual retained deployment directory; replaceme
 cd "${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation/clusters/cluster-1/applications/paperless"
 ```
 
-At the next prompt, reacquire the recorded chart only when absent and refresh declarations. Restore protected files independently; this block creates no cluster resources or credentials:
+At the next prompt, the selector has loaded this deployment's recorded cluster access, namespace, release and installation paths:
 
 ```bash
 set -euo pipefail
 umask 077
+```
+
+Context alone is sufficient for status inspection, capture/publication retry and native restart. These operations neither download a chart nor render declarations or recreate credentials.
+
+### Inspect an installed deployment
+
+For status inspection of an application expected to exist:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o yaml
+```
+
+### Prepare a chart-backed operation
+
+Starting condition: retained context loaded. Use this preparation only before a Helm operation or configuration/connection rendering. Reacquire the recorded chart when absent and refresh declarations; restore protected files only when the selected operation needs them. This block creates no cluster resources or credentials:
+
+```bash
 if [ ! -d "$CHART" ]; then
   mkdir -p "$WORK_DIR/packages/$PACKAGE"
   CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
@@ -406,17 +490,11 @@ PAPERLESS_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTA
 PAPERLESS_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/paperless-connections.yaml")
 ```
 
-### Inspect an installed deployment
-
-For an application expected to exist, inspect it after loading context. Skip this inspection only for the documented retained-state reinstall:
-
-```bash
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o yaml
-```
+Continue with the selected operation.
 
 ## Capture, publication and retry
 
-Start from a resumed, running application with repository credentials and sufficient staging. Do not stop Paperless first: capture needs its current writer execution. Let the controller drain intake/processing and stop writers around export:
+Load [retained context](#load-retained-context) only; no chart preparation is needed. Start from a running application with backup already configured and sufficient staging. Do not stop Paperless first: capture needs its current writer execution. Let the controller drain intake/processing and stop writers around export:
 
 ```bash
 REQUEST="manual-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -440,7 +518,7 @@ Monitor staging, overdue/failed requests, capture age and required independent r
 
 ## Apply changes to a running deployment
 
-Starting condition: a running, Ready deployment with capture/publication settled and no state-changing native work executing. Edit the intended retained configuration, then **Load retained context** again to refresh declarations. Apply scheduling changes without changing run or routing intent:
+Starting condition: a running, Ready deployment with capture/publication settled and no state-changing native work executing. Edit the intended retained configuration, then [prepare the chart-backed operation](#prepare-a-chart-backed-operation) to refresh declarations. Apply scheduling changes without changing run or routing intent:
 
 ```bash
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
@@ -452,7 +530,9 @@ Use the dedicated version-transition and replacement procedures for those operat
 
 ## Stop, start and restart
 
-Resume first. Export needed logs before stop: cancellation deletes native Jobs/Pods. Persist intent rather than scaling controller-owned Deployments:
+### Stop
+
+[Prepare the chart-backed operation](#prepare-a-chart-backed-operation) first. Export needed logs before stop: cancellation deletes native Jobs/Pods. Persist intent rather than scaling controller-owned Deployments:
 
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 0' "$VALUES"
@@ -467,7 +547,9 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs,deployments,replicasets
 
 Require no application/native-Job Pods, including terminating Pods. PostgreSQL/Redis may remain for diagnosis. A running application can continue through API observation loss; submitted stop intent or unreachability is not retirement.
 
-After a completed nonfailed stop, start the same retained deployment:
+### Start
+
+After a completed nonfailed stop, [prepare the chart-backed operation](#prepare-a-chart-backed-operation) and start the same retained deployment:
 
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 1' "$VALUES"
@@ -479,7 +561,9 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
     any(.status.conditions[]; .type == "Ready" and .status == "True" and .observedGeneration == $g)'
 ```
 
-For an ordinary native restart while running:
+### Restart
+
+Load [retained context](#load-retained-context) only. For an ordinary native restart while running, without a failed transition or executing capture:
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout restart deployment/paperless
@@ -507,7 +591,7 @@ TARGET_PACKAGE_VERSION=$(helm show chart "$TARGET_STAGE/bartl-paperless" | yq -e
 
 ### Final capture and source retirement
 
-For a reachable source, resume it, withdraw all intake paths and prevent concurrent publication/configuration changes. Keep its writer execution running for final capture. Disable public ingress and schedules, then capture:
+For a reachable source, load its retained context and [prepare the chart-backed operation](#prepare-a-chart-backed-operation), then withdraw all intake paths and prevent concurrent publication/configuration changes. Keep its writer execution running for final capture. Disable public ingress and schedules, then capture:
 
 ```bash
 export SOURCE_DEPLOYMENT="$DEPLOYMENT"
@@ -778,7 +862,7 @@ curl --fail --silent --show-error --output /dev/null "$PAPERLESS_URL"
 
 Require trusted HTTPS from the reviewer address and HTTP 403 from an independent ordinary source, including a request with a forged `X-Forwarded-For` header naming the reviewer. With no `ipStrategy` configured, the allowlist uses the connection source address. Verify the deployed Middleware and other hostname routes if this fails; do not broaden the allowlist. Ordinary ingress and schedules stay disabled throughout review.
 
-From the allowed address, verify originals/version/rendition bytes, metadata, grants, workflow, search and fresh local/OIDC login. Reacquire API tokens as below without resetting users or assigning an SSO-only user a local password. Complete the records review before affected use resumes. Ingest new synthetic work and publish another usable point:
+From the allowed address, verify the selected point's expected documents, metadata, grants and the installation's agreed search/workflow behavior. Verify fresh local or selected OIDC login; reacquire API tokens only for consumers that need them through [token recovery](#oidc-mfa-and-token-recovery), without resetting users or assigning an SSO-only user a local password. Complete the [records review](#records-after-restore) before affected use resumes. Ingest a permitted test document, verify processing/search/download and publish another usable recovery point:
 
 ```bash
 REQUEST="manual-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -791,6 +875,8 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
 jq -e --arg request "$REQUEST" '.status.backup |
   .request == $request and .phase == "Published" and (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/backup-result.json"
 ```
+
+Require this capture to include the new work. The maintainer's exhaustive synthetic-library fixtures are not required for each recovery; useful restored behavior, new work and a subsequent usable backup are.
 
 Only after acceptance and records approval, restore approved production dependencies and replace the review route with ordinary access. Keep the active deployment, selected point and necessary operating restrictions in the installation record; qualification results belong with the release. Keep source stop intent unchanged. If target writes/effects occurred, do not automatically reactivate the old source.
 
@@ -811,7 +897,7 @@ Verify ordinary access and the restored schedule before removing `"$SOURCE_DIR/b
 
 ## In-place forward upgrade
 
-This retains existing state and does not exercise reconstruction or provide an untouched database fallback. Resume the deployment, configure backup and withdraw production intake through verified environment controls while review access remains possible. Start with no executing native work and prevent concurrent operators. Retain the schedule and suspend scheduled admission before requesting the final export:
+This retains existing state and does not exercise reconstruction or provide an untouched database fallback. Load the deployment's retained context and [prepare the chart-backed operation](#prepare-a-chart-backed-operation), configure backup and withdraw production intake through verified environment controls while review access remains possible. Start with no executing native work and prevent concurrent operators. Retain the schedule and suspend scheduled admission before requesting the final export:
 
 ```bash
 if [ ! -e "$INSTALL_DIR/backup-schedule-before-operation" ]; then
@@ -845,21 +931,10 @@ jq -e --arg request "$REQUEST" --arg previous "$PREVIOUS_CAPTURE" '.status.backu
   (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/pre-upgrade-backup.json"
 ```
 
-If this only republishes the retained export, the check fails: keep intake closed and repeat only the capture block after publication completes. Once a fresh final capture and any required secondary protection are verified, stop the application:
+If this only republishes the retained export, the check fails: keep intake closed and repeat only the capture block after publication completes. Once a fresh final capture and any required secondary protection are verified, with no native work executing, select the supported native target. The controller drains the application before inspection/migration and starts it only after successful preparation; no separate operator stop/start is needed.
 
 ```bash
-yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 0' "$VALUES"
-helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
-  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Stopped --timeout=30m
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs
-```
-
-Require confirmed drainage and a successful final capture, not an interrupted capture marker. Select the supported native target and restart through the same chart:
-
-```bash
-yq -i '.services[strenv(INSTANCE)].version = "3.3.1" |
-  .operations.deployments[strenv(DEPLOYMENT)].replicas = 1' "$VALUES"
+yq -i '.operations.deployments[strenv(DEPLOYMENT)].version = "3.3.1"' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
   --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
@@ -868,7 +943,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
     any(.status.conditions[]; .type == "Ready" and .status == "True" and .observedGeneration == $g)'
 ```
 
-Verify status.version, useful behavior, new ingestion and another capture before reopening access. Never roll old software back against migrated data.
+Verify status.version, the installation's agreed useful behavior and new ingestion under restricted access, then [capture the new work](#capture-publication-and-retry) before reopening intake. Never roll old software back against migrated data.
 
 After acceptance, restore the original schedule; leave an originally manual-only installation manual-only:
 
@@ -882,15 +957,21 @@ helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset
 
 Verify the restored schedule and ordinary access, then remove `"$INSTALL_DIR/backup-schedule-before-operation"`. Retain it if the operation is interrupted.
 
-For a 0.1.0 → 0.2.0 chart adoption, retain the old flat values/artifact references, translate every effective value into `services.<instance>`, preserve identity/claims/Secrets and immutable images, and register/select the immutable 0.2.0 package reference. Reacquire it through **Load retained context**, not a separately maintained customer archive. Do not use the flat file as a second compatibility layer. Historical 0.1.0 archive SHA-256: dc87e82d5350a4f31850ef801521f836e4567e8ecf81e3a7e319e7935e48dfa8; OCI manifest: ef2bf48e83bb7b919d85d36d18ad6191373e401c74f03c402e88c749d1601c0d. Before any CRD-changing upgrade, review shared compatibility and apply the selected definition; Helm does not update an existing CRD:
+## Upgrade the package chart
+
+A package-chart update is separate from a native Paperless version change. Select an independently qualified compatible chart, retain the current immutable artifact references, and update only this deployment's package selection in the installation record. Preserve native version, identity, claim/Secret bindings and deployment intent; reload retained context, then [prepare the chart-backed operation](#prepare-a-chart-backed-operation) to acquire the recorded chart. Before a CRD-changing update, review compatibility with every release sharing the CRD and apply the selected definition; Helm does not update an existing CRD:
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" apply -f <(helm show crds "$CHART")
 ```
 
+Apply the selected chart with the [running-deployment change](#apply-changes-to-a-running-deployment) procedure, or retain stopped intent when updating a stopped deployment. Verify the intended native version and state remain unchanged. Flat-value migration from 0.1.0 is not a current operating procedure.
+
 ## Removal and retained-state reinstall
 
-Resume, export diagnostics and obtain current-generation Stopped with no application/native-Job Pods. Keep stop intent and prevent competing reconcilers. Finalize while the controller remains alive:
+### Remove the release
+
+Load retained context and [prepare the chart-backed operation](#prepare-a-chart-backed-operation), export diagnostics and obtain current-generation Stopped with no application/native-Job Pods. Keep stop intent and prevent competing reconcilers. Finalize while the controller remains alive:
 
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 0' "$VALUES"
@@ -913,7 +994,9 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc,secrets
 
 Finalization drains dependencies and releases only this CR's claim bindings. Claims/data/Secrets survive. Do not bypass finalizers or delete controller/namespace first. A timeout is not authorization to force deletion.
 
-After successful finalization, with intact retained state and no failed transition marker or competing owner, reinstall without recreating PVCs or credentials, including the separate client-CA Secret when custom trust was selected. If configuration Secrets were lost, restore retained inputs and repeat [configuration preparation](#custom-client-ca-trust), not fresh identity generation, before installation. In a fresh shell first [load retained context](#load-retained-context), skipping live inspection of the deliberately deleted application:
+### Reinstall retained state
+
+After successful finalization, with intact retained state and no failed transition marker or competing owner, reinstall without recreating PVCs or credentials, including the separate client-CA Secret when custom trust was selected. In a fresh shell first [load retained context](#load-retained-context), then [prepare the chart-backed operation](#prepare-a-chart-backed-operation); do not inspect the deliberately deleted application. If configuration Secrets were lost, restore retained inputs and repeat [configuration rendering](#render-configuration), not fresh identity generation, then return here:
 
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 1' "$VALUES"
@@ -925,7 +1008,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
     any(.status.conditions[]; .type == "Ready" and .status == "True" and .observedGeneration == $g)'
 ```
 
-Verify existing identity/library, useful work and another capture. Uninstall cannot repair failed state. Namespace/PVC deletion needs a separate destructive data-disposition decision. Infrastructure and owned DNS cleanup are separate; never delete shared CRDs or external backup history as application cleanup.
+Verify existing identity/library, agreed useful behavior and new work, then [capture that work](#capture-publication-and-retry) when backup is configured. Uninstall cannot repair failed state. Namespace/PVC deletion needs a separate destructive data-disposition decision. Infrastructure and owned DNS cleanup are separate; never delete shared CRDs or external backup history as application cleanup.
 
 ## OIDC, MFA and token recovery
 
@@ -968,8 +1051,6 @@ The selected archive ships the service interface and defaults. Supported inputs 
 
 Connection rendering exposes HTTPS, OIDC/backup requests, credential requirements/bindings and storage claims. Configuration rendering exposes configuration.<instance>.secretName/environment and whether a client secret is needed. Protected values are added locally, never to VALUES. Refresh derived resolved bindings after source choices change. The unpublished 0.2.1 chart selects `deployments.<deployment>`, validates its namespace, release and package version against Helm, and applies only `operations.deployments.<deployment>.{version,replicas,ingressEnabled}` over the selected service/defaults. Native version is a service choice unless the selected target overrides it. Direct `instance` selection remains supported without a deployment record; published 0.2.0 does not implement deployment selection.
 
-When moving an existing 0.2.0 installation to 0.2.1, retain `services.<instance>` and its native version, update only the selected `packages.<package>.version` to the acquired chart, and keep source and replacement operation entries distinct. Remove a stale `services.<instance>.release` pin to 0.2.0 (or explicitly change it to the acquired chart version); otherwise the chart correctly rejects the mismatch. Do not copy operation overrides into the shared service or reuse a replacement target's intent for the source.
-
 Historical runtime tests and another namespace on one host do not qualify this revised sequence or provider-loss activation. Exact-artifact qualification results belong in the existing release/integration record, not a customer execution diary. Maintainer procedures follow below.
 
 ## Maintainer procedures and evidence
@@ -998,6 +1079,8 @@ node tests/check-library.mjs verify /protected/library-inputs.json
 Only synthetic documents with titles beginning `Synthetic ` are allowed. Inputs contain `url`, `tokensFile` (admin/reader/denied test-role tokens), `expectedFile`, `fixturesDir`, `files` (route/file with optional actor/deniedActors), `searches` (query/ids with optional actor) and `readOnlyDocument`. Include required versions/renditions. Baseline precedes capture; verify follows each transition with recovered credentials. Keep inputs, tokens, expected state and raw output outside Git; retain exact artifacts, concise results and material limits in the existing release/integration record.
 
 Historical 0.1.0 runtime tests on 25 October 2026 restored after source-VM deletion, covering originals/versions, relationships, metadata, permissions, token reacquisition, search and another backup restored into fresh database/file/Redis storage. The export's millisecond version-added timestamp precision remains a fidelity limit. Other package fault scenarios removed source installations/storage and primary repositories on one disposable K3s host; they do not establish host/provider-loss failover or cross-cluster fencing. The target was Debian 13 amd64, K3s v1.36.5+k3s1, cert-manager 1.21.3 and Helm 4.3.0; Podman 5.4.2 built images.
+
+Historical 0.1.0 chart archive SHA-256: `dc87e82d5350a4f31850ef801521f836e4567e8ecf81e3a7e319e7935e48dfa8`; OCI manifest: `ef2bf48e83bb7b919d85d36d18ad6191373e401c74f03c402e88c749d1601c0d`. These identify historical evidence, not a supported flat-values adoption path.
 
 Native observations on 24 October showed queued work surviving tested replacements, but interrupted active work did not settle within the observation window and revocation did not survive worker replacement. Warm shutdown did not independently prove writer/descendant termination. These findings justify settled-work capture, not replay/reconciliation. The experimental supervisor/scripts/chart/reconciliation code retired in `82e4357` is not the current design.
 
