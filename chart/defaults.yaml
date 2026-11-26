@@ -1,5 +1,3 @@
-replicas: 1
-version: "3.3.1"
 controller:
   image: ghcr.io/bartlapp/bartl-paperless-controller@sha256:caa57d3bb9bc8566903dc14c7265d4e201d90d79d9f8c818c86f46d49328e147
   imagePullPolicy: IfNotPresent

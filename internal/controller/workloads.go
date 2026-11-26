@@ -4,7 +4,7 @@ package controller
 import (
 	"context"
 	"fmt"
-	api "github.com/floriankesslergmbh/bartl-paperless/api/v1alpha1"
+	api "github.com/floriankesslergmbh/bartl-paperless/api/v1alpha2"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -39,8 +39,11 @@ func desired(a *api.PaperlessApplication) string {
 	}
 	return a.Spec.Version
 }
+func enabled(a *api.PaperlessApplication) bool {
+	return a.DeletionTimestamp.IsZero() && (a.Spec.Running == nil || *a.Spec.Running)
+}
 func running(a *api.PaperlessApplication) bool {
-	return a.DeletionTimestamp.IsZero() && (a.Spec.Replicas == nil || *a.Spec.Replicas == 1)
+	return enabled(a) && (a.Spec.Replicas == nil || *a.Spec.Replicas == 1)
 }
 func env(name, value string) corev1.EnvVar { return corev1.EnvVar{Name: name, Value: value} }
 func fieldEnv(name, path string) corev1.EnvVar {

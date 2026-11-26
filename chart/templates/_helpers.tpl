@@ -109,8 +109,6 @@
 {{- include "paperless.validate" (dict "schema" $definitions.service "definitions" $definitions "value" $selected "path" (printf "services.%s" $instance)) -}}
 {{- if and (hasKey $selected "release") (ne $selected.release .Chart.Version) -}}{{- fail (printf "services.%s.release selects %s but this chart is %s" $instance $selected.release .Chart.Version) -}}{{- end -}}
 {{- $service := mergeOverwrite (include "paperless.defaults" . | fromYaml) (deepCopy $selected) -}}
-{{- if hasKey $selection.intent "version" -}}{{- $_ := set $service "version" $selection.intent.version -}}{{- end -}}
-{{- if hasKey $selection.intent "replicas" -}}{{- $_ := set $service "replicas" $selection.intent.replicas -}}{{- end -}}
 {{- if hasKey $selection.intent "ingressEnabled" -}}{{- $_ := set $service.ingress "enabled" $selection.intent.ingressEnabled -}}{{- end -}}
 {{- if not (hasKey $service "hostname") -}}
   {{- $domain := required "dns.root is required when the selected Paperless service has no hostname" (get (get .Values "dns" | default dict) "root") -}}

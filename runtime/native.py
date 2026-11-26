@@ -123,9 +123,10 @@ def api(path):
 
 def authority(execution=None):
     ns, name = required('BARTL_NAMESPACE'), required('BARTL_NAME')
-    app = api(f'/apis/paperless.bartl.sh/v1alpha1/namespaces/{ns}/paperlessapplications/{name}')
+    app = api(f'/apis/paperless.bartl.sh/v1alpha2/namespaces/{ns}/paperlessapplications/{name}')
     if (app['metadata']['uid'] != required('BARTL_UID') or app['metadata'].get('deletionTimestamp')
-            or app['spec']['replicas'] != 1 or app['spec']['identity'] != identity()
+            or app['spec']['running'] is not True or app['spec']['replicas'] != 1
+            or app['spec']['identity'] != identity()
             or app.get('status', {}).get('failure')):
         raise RuntimeError('Running authority withdrawn')
     for claim in app['spec']['claims'].values():
@@ -343,6 +344,10 @@ def prepare(migration=False):
                               DJANGO_SUPERUSER_PASSWORD=required('PAPERLESS_ADMIN_PASSWORD'),
                               DJANGO_SUPERUSER_EMAIL=os.environ.get('PAPERLESS_ADMIN_MAIL', ''))
             manage('createsuperuser', '--noinput')
+        # /init's init-search-index performs this conditional native rebuild.
+        # 3.3.1 changes search schema v3 -> v4 (root documents only), despite
+        # having no new Django migrations. Complete it before binding the target.
+        manage('document_index', 'reindex', '--if-needed', '--no-progress-bar')
         # Finite Jobs run as root to protect staging; native services run as UID 1000.
         for name in ('data', 'media', 'consume'):
             root = HOME / name

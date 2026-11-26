@@ -3,7 +3,7 @@ package main
 
 import (
 	"flag"
-	api "github.com/floriankesslergmbh/bartl-paperless/api/v1alpha1"
+	api "github.com/floriankesslergmbh/bartl-paperless/api/v1alpha2"
 	"github.com/floriankesslergmbh/bartl-paperless/internal/controller"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"

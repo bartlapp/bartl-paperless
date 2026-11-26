@@ -4,7 +4,7 @@ package controller
 import (
 	"context"
 	"fmt"
-	api "github.com/floriankesslergmbh/bartl-paperless/api/v1alpha1"
+	api "github.com/floriankesslergmbh/bartl-paperless/api/v1alpha2"
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 	appsv1 "k8s.io/api/apps/v1"
@@ -108,11 +108,6 @@ func validate(a *api.PaperlessApplication) error {
 	if a.Spec.Backup.DrainSeconds < 0 {
 		return fmt.Errorf("drainSeconds must be positive")
 	}
-	if a.Spec.Backup.Schedule != "" {
-		if _, err := schedule(a); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 func claimNames(c api.Claims) []string { return []string{c.Storage, c.Database, c.Broker, c.Staging} }
@@ -152,11 +147,25 @@ func (r *Reconciler) acquire(ctx context.Context, a *api.PaperlessApplication) e
 	}
 	return nil
 }
-func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, reconcileErr error) {
 	a := &api.PaperlessApplication{}
 	if err := r.Reader.Get(ctx, req.NamespacedName, a); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	defer func() {
+		if reconcileErr == nil {
+			return
+		}
+		// Failed management observation cannot certify a new configuration or
+		// terminate already admitted execution.
+		condition(a, "Ready", metav1.ConditionUnknown, "ReconciliationUnavailable", reconcileErr.Error())
+		if !running(a) {
+			condition(a, "Stopped", metav1.ConditionUnknown, "TerminationUnconfirmed", reconcileErr.Error())
+		}
+		if err := r.Status().Update(ctx, a); err != nil {
+			reconcileErr = fmt.Errorf("%w; reporting observation failure: %v", reconcileErr, err)
+		}
+	}()
 	// Current stop/deletion preempts even completed Jobs and invalid new configuration.
 	if !running(a) {
 		return r.stop(ctx, a, !a.DeletionTimestamp.IsZero())
@@ -173,8 +182,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if err != nil {
 			return ctrl.Result{}, err
 		}
+		condition(a, "Stopped", metav1.ConditionFalse, "FailureIsolating", "Waiting for all owned execution to stop")
 		if done && cancelled {
-			condition(a, "Stopped", metav1.ConditionTrue, "FailureIsolated", a.Status.Failure)
+			dependenciesStopped, err := r.stopDependencies(ctx, a)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if dependenciesStopped {
+				a.Status.Replicas = 0
+				condition(a, "Stopped", metav1.ConditionTrue, "FailureIsolated", a.Status.Failure)
+			}
 		}
 		return r.save(ctx, a)
 	}
@@ -349,6 +366,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: "paperless"}, deployment); err != nil {
 		return ctrl.Result{}, err
 	}
+	a.Status.Replicas = deployment.Status.Replicas
 	ready := st.Ready && podReady(pod) &&
 		deployment.Status.ObservedGeneration >= deployment.Generation &&
 		deployment.Status.UpdatedReplicas == 1 && deployment.Status.ReadyReplicas == 1
@@ -361,6 +379,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if a.Status.Backup.Phase == "Capturing" || a.Status.Backup.Phase == "Admitting" || a.Status.Backup.Phase == "Captured" || a.Status.Backup.Phase == "Publishing" {
 		return r.backup(ctx, a, pod, st)
+	}
+	if ready && a.Spec.Backup.Schedule != "" {
+		if _, err := schedule(a); err != nil {
+			condition(a, "Ready", metav1.ConditionFalse, "BackupConfigurationRefused", err.Error())
+			return r.backupFailure(ctx, a, err, false)
+		}
 	}
 	if ready {
 		return r.backup(ctx, a, pod, st)
@@ -503,8 +527,41 @@ func (r *Reconciler) stop(ctx context.Context, a *api.PaperlessApplication, dele
 	if !done {
 		return r.save(ctx, a)
 	}
+	a.Status.Replicas = 0
+	if enabled(a) && a.Status.Failure == "" {
+		// Serving-component zero is not whole-application stop. Dependencies
+		// remain available, but no startup/capture work is admitted.
+		if err := validate(a); err != nil {
+			return r.fail(ctx, a, err)
+		}
+		if !controllerutil.ContainsFinalizer(a, finalizer) {
+			controllerutil.AddFinalizer(a, finalizer)
+			return ctrl.Result{Requeue: true}, r.Update(ctx, a)
+		}
+		if a.Status.Identity == nil {
+			id, claims := a.Spec.Identity, a.Spec.Claims
+			a.Status.Identity, a.Status.Claims = &id, &claims
+			return r.save(ctx, a)
+		}
+		if err := r.acquire(ctx, a); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.dependencies(ctx, a); err != nil {
+			return ctrl.Result{}, err
+		}
+		a.Status.State = "ApplicationStopped"
+		condition(a, "Stopped", metav1.ConditionFalse, "ApplicationOnlyStopped", "Application execution stopped; dedicated dependencies remain enabled")
+		return r.save(ctx, a)
+	}
+	dependenciesStopped, err := r.stopDependencies(ctx, a)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !dependenciesStopped {
+		return r.save(ctx, a)
+	}
 	a.Status.State = "Stopped"
-	condition(a, "Stopped", metav1.ConditionTrue, "DrainConfirmed", "No application or Job Pods remain; replicas acknowledged zero")
+	condition(a, "Stopped", metav1.ConditionTrue, "DrainConfirmed", "All owned execution and dedicated dependencies have stopped")
 	if !deleting {
 		return r.save(ctx, a)
 	}
@@ -586,6 +643,56 @@ func (r *Reconciler) stop(ctx context.Context, a *api.PaperlessApplication, dele
 	controllerutil.RemoveFinalizer(a, finalizer)
 	return ctrl.Result{}, r.Update(ctx, a)
 }
+
+// Stop dependencies only after application and finite native writers are gone.
+// Observe Deployments, ReplicaSets and Pods: requested replicas alone are not
+// evidence that a database process (including a terminating Pod) has ended.
+func (r *Reconciler) stopDependencies(ctx context.Context, a *api.PaperlessApplication) (bool, error) {
+	done := true
+	for _, role := range []string{"db", "redis"} {
+		d := &appsv1.Deployment{}
+		err := r.Reader.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: "paperless-" + role}, d)
+		if err == nil {
+			if !metav1.IsControlledBy(d, a) {
+				return false, fmt.Errorf("foreign dependency %s prevents confirmed stop", d.Name)
+			}
+			if d.Spec.Replicas == nil || *d.Spec.Replicas != 0 {
+				d.Spec.Replicas = pointer(int32(0))
+				if err := r.Update(ctx, d); err != nil {
+					return false, err
+				}
+				done = false
+			}
+			if d.Status.ObservedGeneration < d.Generation || d.Status.Replicas != 0 {
+				done = false
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return false, err
+		}
+		sets := &appsv1.ReplicaSetList{}
+		if err := r.Reader.List(ctx, sets, client.InNamespace(a.Namespace), client.MatchingLabels(labels(a, role))); err != nil {
+			return false, err
+		}
+		for i := range sets.Items {
+			s := &sets.Items[i]
+			if d.UID == "" || !metav1.IsControlledBy(s, d) {
+				return false, fmt.Errorf("foreign dependency ReplicaSet %s", s.Name)
+			}
+			if s.Spec.Replicas == nil || *s.Spec.Replicas != 0 || s.Status.Replicas != 0 || s.Status.ObservedGeneration < s.Generation {
+				done = false
+			}
+		}
+		pods := &corev1.PodList{}
+		if err := r.Reader.List(ctx, pods, client.InNamespace(a.Namespace), client.MatchingLabels(labels(a, role))); err != nil {
+			return false, err
+		}
+		if len(pods.Items) != 0 {
+			done = false
+		}
+	}
+	return done, nil
+}
+
 func schedule(a *api.PaperlessApplication) (cron.Schedule, error) {
 	zone := a.Spec.Backup.TimeZone
 	if zone == "" {

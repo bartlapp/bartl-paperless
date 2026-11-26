@@ -26,8 +26,6 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "version": {"type": "string", "enum": ["3.3.0", "3.3.1"]},
-        "replicas": {"type": "integer", "minimum": 0, "maximum": 1},
         "ingressEnabled": {"type": "boolean"}
       }
     },
@@ -44,18 +42,6 @@
           "minLength": 1,
           "maxLength": 245,
           "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
-        },
-        "version": {
-          "type": "string",
-          "enum": [
-            "3.3.0",
-            "3.3.1"
-          ]
-        },
-        "replicas": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 1
         },
         "claims": {
           "type": "object",
@@ -194,19 +180,23 @@
           "properties": {
             "runtime330": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 2048
             },
             "runtime331": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 2048
             },
             "postgres": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 2048
             },
             "redis": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 2048
             }
           }
         }

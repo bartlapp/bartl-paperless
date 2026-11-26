@@ -6,7 +6,7 @@
 {{- $service := include "paperless.service" . | fromYaml }}
 {{- $backup := include "paperless.backup" (dict "root" . "service" $service) | fromYaml }}
 {{- $oidc := include "paperless.oidc" (dict "root" . "service" $service) | fromYaml }}
-apiVersion: paperless.bartl.sh/v1alpha1
+apiVersion: paperless.bartl.sh/v1alpha2
 kind: PaperlessApplication
 metadata:
   name: paperless
@@ -17,8 +17,7 @@ spec:
   identity:
     installation: {{ .Values.installation | quote }}
     instance: {{ $instance | quote }}
-  replicas: {{ $service.replicas }}
-  version: {{ $service.version | quote }}
+  version: {{ .Chart.AppVersion | quote }}
   images:
     {{- toYaml $service.images | nindent 4 }}
   claims:

@@ -11,15 +11,21 @@ spec:
     kind: PaperlessApplication
     shortNames: [paperless]
   versions:
-    - name: v1alpha1
+    - name: v1alpha2
       served: true
       storage: true
       subresources:
         status: {}
+        scale:
+          specReplicasPath: .spec.replicas
+          statusReplicasPath: .status.replicas
       additionalPrinterColumns:
         - name: Version
           type: string
           jsonPath: .spec.version
+        - name: Running
+          type: boolean
+          jsonPath: .spec.running
         - name: Replicas
           type: integer
           jsonPath: .spec.replicas
@@ -56,33 +62,45 @@ spec:
                       type: string
                       minLength: 1
                       maxLength: 128
+                running:
+                  type: boolean
+                  default: true
                 replicas:
                   type: integer
+                  format: int32
                   default: 1
                   enum: [0, 1]
                 version:
                   type: string
+                  maxLength: 16
                   default: "3.3.1"
                   enum: ["3.3.0", "3.3.1"]
                   x-kubernetes-validations:
-                    - rule: "oldSelf != '3.3.1' || self == '3.3.1'"
-                      message: Downgrades are not supported
+                    - rule: self == oldSelf
+                      message: Native version is immutable; install a replacement on independent state
                 images:
                   type: object
                   required: [runtime330, runtime331, postgres, redis]
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: Runtime images are immutable; install a replacement on independent state
                   properties:
                     runtime330:
                       type: string
                       minLength: 1
+                      maxLength: 2048
                     runtime331:
                       type: string
                       minLength: 1
+                      maxLength: 2048
                     postgres:
                       type: string
                       minLength: 1
+                      maxLength: 2048
                     redis:
                       type: string
                       minLength: 1
+                      maxLength: 2048
                 claims:
                   type: object
                   required: [storage, database, broker, staging]
@@ -165,3 +183,8 @@ spec:
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true
+              properties:
+                replicas:
+                  type: integer
+                  format: int32
+                  minimum: 0

@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	api "github.com/floriankesslergmbh/bartl-paperless/api/v1alpha1"
+	api "github.com/floriankesslergmbh/bartl-paperless/api/v1alpha2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-package v1alpha1
+package v1alpha2
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -7,7 +7,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-var GroupVersion = schema.GroupVersion{Group: "paperless.bartl.sh", Version: "v1alpha1"}
+var GroupVersion = schema.GroupVersion{Group: "paperless.bartl.sh", Version: "v1alpha2"}
 var SchemeBuilder = runtime.NewSchemeBuilder(func(s *runtime.Scheme) error {
 	s.AddKnownTypes(GroupVersion, &PaperlessApplication{}, &PaperlessApplicationList{})
 	metav1.AddToGroupVersion(s, GroupVersion)
@@ -47,6 +47,7 @@ type IngressSpec struct {
 }
 type PaperlessApplicationSpec struct {
 	Identity            Identity    `json:"identity"`
+	Running             *bool       `json:"running,omitempty"`
 	Replicas            *int32      `json:"replicas,omitempty"`
 	Version             string      `json:"version,omitempty"`
 	Images              Images      `json:"images"`
@@ -103,6 +104,7 @@ type BackupStatus struct {
 type PaperlessApplicationStatus struct {
 	Operations         []Operation        `json:"operations,omitempty"`
 	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+	Replicas           int32              `json:"replicas"`
 	State              string             `json:"state,omitempty"`
 	Failure            string             `json:"failure,omitempty"`
 	Identity           *Identity          `json:"identity,omitempty"`
@@ -133,6 +135,10 @@ func (in *PaperlessApplication) DeepCopy() *PaperlessApplication {
 	out := new(PaperlessApplication)
 	*out = *in
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	if in.Spec.Running != nil {
+		v := *in.Spec.Running
+		out.Spec.Running = &v
+	}
 	if in.Spec.Replicas != nil {
 		v := *in.Spec.Replicas
 		out.Spec.Replicas = &v

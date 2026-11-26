@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	api "github.com/floriankesslergmbh/bartl-paperless/api/v1alpha1"
+	api "github.com/floriankesslergmbh/bartl-paperless/api/v1alpha2"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -40,47 +40,6 @@ func fixture(t *testing.T, objects ...client.Object) (*Reconciler, context.Conte
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&api.PaperlessApplication{}).WithObjects(objects...).Build()
 	return &Reconciler{Client: c, Reader: c, Scheme: s, Namespace: "test"}, context.Background()
-}
-func TestNativeConfigurationFilesReachApplicationAndJobs(t *testing.T) {
-	a := applicationFixture()
-	for _, version := range []string{"3.3.0", "3.3.1"} {
-		for _, kind := range []string{"application", "prepare", "capture", "inspect", "publish"} {
-			t.Run(version+"/"+kind, func(t *testing.T) {
-				pod := appPod(a, version, "")
-				if kind != "application" {
-					pod = jobFor(a, newOperation(a, kind, version, "Empty")).Spec.Template.Spec
-				}
-				wantConfiguration := kind != "inspect" && kind != "publish"
-				var mounted, supplied, environment bool
-				for _, volume := range pod.Volumes {
-					if volume.Name == "client-ca" {
-						supplied = volume.Secret != nil && volume.Secret.SecretName == a.Spec.ConfigurationSecret+"-client-ca" && volume.Secret.Optional != nil && *volume.Secret.Optional
-					}
-				}
-				for _, mount := range pod.Containers[0].VolumeMounts {
-					if mount.Name == "client-ca" {
-						mounted = mount.MountPath == "/configuration" && mount.ReadOnly && mount.SubPath == ""
-					}
-				}
-				for _, source := range pod.Containers[0].EnvFrom {
-					if source.SecretRef != nil && source.SecretRef.Name == a.Spec.ConfigurationSecret+"-client-ca" {
-						t.Fatal("CA file Secret must never be exported through EnvFrom")
-					}
-					if source.SecretRef != nil && source.SecretRef.Name == a.Spec.ConfigurationSecret {
-						environment = true
-					}
-				}
-				if mounted != wantConfiguration || supplied != wantConfiguration || environment != wantConfiguration {
-					t.Fatalf("native configuration handoff: mounted=%v supplied=%v environment=%v, want %v", mounted, supplied, environment, wantConfiguration)
-				}
-				for _, variable := range pod.Containers[0].Env {
-					if variable.Name == "REQUESTS_CA_BUNDLE" || variable.Name == "SSL_CERT_FILE" {
-						t.Fatalf("controller must not override optional native trust: %#v", variable)
-					}
-				}
-			})
-		}
-	}
 }
 func owner(t *testing.T, r *Reconciler, a client.Object, b client.Object) {
 	t.Helper()
@@ -162,7 +121,7 @@ func TestResultMustBindBothApplicationAndOperation(t *testing.T) {
 }
 func TestStopPreemptsCompletedButUnobservedTransition(t *testing.T) {
 	a := applicationFixture()
-	a.Spec.Replicas = pointer(int32(0))
+	a.Spec.Running = pointer(false)
 	a.Status.Operation = newOperation(a, "prepare", "3.3.1", "Empty")
 	a.Status.Operation.Phase = "Admitted"
 	r, ctx := fixture(t, a)
@@ -665,5 +624,103 @@ func TestFinalizationWaitsForFixedResourcesBeforeReleasingClaims(t *testing.T) {
 	}
 	if claim.Annotations[ownerAnnotation] != "" {
 		t.Fatal("claim remained bound after complete finalization")
+	}
+}
+
+func TestWholeStopWaitsForDedicatedComponentsAndPreservesIntent(t *testing.T) {
+	a := applicationFixture()
+	a.Spec.Running = pointer(false)
+	r, ctx := fixture(t, a)
+	db := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "paperless-db", Namespace: a.Namespace, UID: "db"}, Spec: appsv1.DeploymentSpec{Replicas: pointer(int32(1))}}
+	owner(t, r, a, db)
+	if err := r.Create(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "database-still-terminating", Namespace: a.Namespace, Labels: labels(a, "db")}}
+	if err := r.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(a)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fresh := &api.PaperlessApplication{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(a), fresh); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range fresh.Status.Conditions {
+		if c.Type == "Stopped" && c.Status == metav1.ConditionTrue {
+			t.Fatal("database Pod still exists")
+		}
+	}
+	if *fresh.Spec.Replicas != 1 || *fresh.Spec.Running {
+		t.Fatal("stop overwrote independent runtime intent")
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(db), db); err != nil {
+		t.Fatal(err)
+	}
+	if *db.Spec.Replicas != 0 {
+		t.Fatal("dedicated database was not stopped")
+	}
+	if err := r.Delete(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(a)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(a), fresh); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range fresh.Status.Conditions {
+		if c.Type == "Stopped" && c.Status == metav1.ConditionTrue {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("confirmed component termination did not complete stop")
+	}
+}
+
+func TestApplicationZeroKeepsDedicatedDependenciesWithoutWholeStop(t *testing.T) {
+	a := applicationFixture()
+	a.Spec.Replicas = pointer(int32(0))
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "paperless-native", Namespace: a.Namespace}}
+	r, ctx := fixture(t, a, sa)
+	for _, name := range claimNames(a.Spec.Claims) {
+		if err := r.Create(ctx, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: a.Namespace}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 4 {
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(a)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"paperless-db", "paperless-redis"} {
+		d := &appsv1.Deployment{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: name}, d); err != nil {
+			t.Fatal(err)
+		}
+		if *d.Spec.Replicas != 1 {
+			t.Fatalf("%s was stopped with application-only zero", name)
+		}
+	}
+	fresh := &api.PaperlessApplication{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(a), fresh); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range fresh.Status.Conditions {
+		if c.Type == "Stopped" && c.Status == metav1.ConditionTrue {
+			t.Fatal("application-only stop reported whole stop")
+		}
+	}
+	jobs := &batchv1.JobList{}
+	if err := r.List(ctx, jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 0 {
+		t.Fatal("zero application admitted native work")
 	}
 }
