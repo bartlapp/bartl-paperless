@@ -222,6 +222,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 		return ctrl.Result{}, err
 	}
 	condition(a, "Stopped", metav1.ConditionFalse, "RunRequested", "Run intent is active")
+	if a.Status.Backup.Withdrawn {
+		// Final capture has durably ended every native writer. Publication
+		// needs only its retained export, never a replacement application Pod.
+		condition(a, "Ready", metav1.ConditionFalse, "WritesWithdrawn", "Final capture withdrew source writers; publication or retirement remains")
+		a.Status.State = "WritesWithdrawn"
+		if err := r.withdrawIngress(ctx, a); err != nil {
+			return ctrl.Result{}, err
+		}
+		done, err := r.drain(ctx, a, false)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !done {
+			return r.save(ctx, a)
+		}
+		a.Status.Replicas = 0
+		return r.backup(ctx, a, nil, nil)
+	}
 	if a.Status.TargetVersion != "" && a.Status.TargetVersion != desired(a) && a.Status.PreparedVersion != a.Status.TargetVersion {
 		return r.fail(ctx, a, fmt.Errorf("version changed during admitted transition"))
 	}
@@ -333,6 +351,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 		return ctrl.Result{}, err
 	}
 	pendingCapture := a.Status.Backup.Phase == "Capturing" || a.Status.Backup.Phase == "Admitting"
+	if pendingCapture && pod != nil {
+		captured, err := completedWithdrawal(a, pod)
+		if err != nil {
+			return r.backupFailure(ctx, a, err, true)
+		}
+		if captured != nil {
+			a.Status.Backup.CapturedAt = captured.CapturedAt
+			a.Status.Backup.Resumed = false
+			a.Status.Backup.Withdrawn = true
+			a.Status.Backup.Phase = "Captured"
+			return r.save(ctx, a)
+		}
+	}
 	if pod == nil || containerID(pod) == "" {
 		if pod != nil {
 			if err := gateFailure(a, pod); err != nil {
@@ -377,14 +408,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	} else {
 		condition(a, "Ready", metav1.ConditionFalse, "NativeNotReady", "Waiting for native readiness")
 	}
+	var backupConfigurationErr error
+	if ready && a.Spec.Backup.Schedule != "" {
+		_, backupConfigurationErr = schedule(a)
+		if backupConfigurationErr != nil {
+			condition(a, "Ready", metav1.ConditionFalse, "BackupConfigurationRefused", backupConfigurationErr.Error())
+		}
+	}
 	if a.Status.Backup.Phase == "Capturing" || a.Status.Backup.Phase == "Admitting" || a.Status.Backup.Phase == "Captured" || a.Status.Backup.Phase == "Publishing" {
 		return r.backup(ctx, a, pod, st)
 	}
-	if ready && a.Spec.Backup.Schedule != "" {
-		if _, err := schedule(a); err != nil {
-			condition(a, "Ready", metav1.ConditionFalse, "BackupConfigurationRefused", err.Error())
-			return r.backupFailure(ctx, a, err, false)
-		}
+	if backupConfigurationErr != nil {
+		return r.backupFailure(ctx, a, backupConfigurationErr, false)
 	}
 	if ready {
 		return r.backup(ctx, a, pod, st)
@@ -473,17 +508,19 @@ func (r *Reconciler) drain(ctx context.Context, a *api.PaperlessApplication, all
 	}
 	return acknowledged, nil
 }
-func (r *Reconciler) stop(ctx context.Context, a *api.PaperlessApplication, deleting bool) (ctrl.Result, error) {
+func (r *Reconciler) withdrawIngress(ctx context.Context, a *api.PaperlessApplication) error {
 	ingress := &networkingv1.Ingress{}
-	err := r.Reader.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: "paperless"}, ingress)
-	if err == nil {
-		if !metav1.IsControlledBy(ingress, a) {
-			return ctrl.Result{}, fmt.Errorf("foreign ingress prevents confirmed route withdrawal")
-		}
-		if err := r.Delete(ctx, ingress); client.IgnoreNotFound(err) != nil {
-			return ctrl.Result{}, err
-		}
-	} else if !apierrors.IsNotFound(err) {
+	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: "paperless"}, ingress); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(ingress, a) {
+		return fmt.Errorf("foreign ingress prevents confirmed route withdrawal")
+	}
+	return client.IgnoreNotFound(r.Delete(ctx, ingress))
+}
+
+func (r *Reconciler) stop(ctx context.Context, a *api.PaperlessApplication, deleting bool) (ctrl.Result, error) {
+	if err := r.withdrawIngress(ctx, a); err != nil {
 		return ctrl.Result{}, err
 	}
 	if op := a.Status.Operation; op != nil && op.Phase != "Succeeded" && op.Phase != "Interrupted" && op.Phase != "Failed" {
@@ -495,11 +532,19 @@ func (r *Reconciler) stop(ctx context.Context, a *api.PaperlessApplication, dele
 		// Observe a durable completion before cancelling, without authorizing
 		// resumption or publication under stopped intent.
 		pod, observationErr := r.liveAppPod(ctx, a)
-		if observationErr == nil && pod != nil && containerID(pod) != "" {
-			if st, err := r.readStatus(ctx, a, pod); err == nil && completedCapture(a, st) {
-				b.CapturedAt = st.Capture.CapturedAt
-				b.Resumed = true
+		if observationErr == nil && pod != nil {
+			if captured, err := completedWithdrawal(a, pod); err == nil && captured != nil {
+				b.CapturedAt = captured.CapturedAt
+				b.Resumed = false
+				b.Withdrawn = true
 				b.Phase = "Captured"
+			} else if containerID(pod) != "" {
+				if st, err := r.readStatus(ctx, a, pod); err == nil && completedCapture(a, st) {
+					b.CapturedAt = st.Capture.CapturedAt
+					b.Resumed = st.Capture.Resumed
+					b.Withdrawn = st.Capture.Withdrawn
+					b.Phase = "Captured"
+				}
 			}
 		}
 	}

@@ -360,7 +360,40 @@ def prepare(migration=False):
         return result({'state': 'Prepared', 'version': version()})
 
 
+def withdrawal_receipt():
+    captured = load(STATE / 'capture.json')
+    if not captured or captured.get('state') != 'Captured' or not captured.get('withdrawn'):
+        return None
+    marker = load(STATE / 'transition.json')
+    operation, execution = captured.get('operation', ''), captured.get('execution', '')
+    if (not OP.fullmatch(operation) or not execution or captured.get('resumed')
+            or captured.get('resumptionError') or not captured.get('withdrawAfterCapture')
+            or not marker or marker.get('state') != 'Captured' or marker.get('operation') != operation
+            or marker.get('execution') != execution or not marker.get('withdrawn')
+            or captured.get('path') != str(STAGING / 'captures' / operation)):
+        raise RuntimeError('Completed withdrawal binding is invalid')
+    # Capture wrote this receipt only after verification. Publication rechecks
+    # all bytes; observing a closed gate need not rehash the entire export.
+    manifest = load(Path(captured['path']) / 'bartl-manifest.json')
+    if (not manifest or manifest.get('format') != 1 or manifest.get('identity') != identity()
+            or manifest.get('operation') != operation or manifest.get('execution') != execution
+            or manifest.get('capturedAt') != captured.get('capturedAt')
+            or manifest.get('version') != version()):
+        raise RuntimeError('Completed withdrawal does not match its capture')
+    return captured
+
+
 def gate():
+    # Observation only: no writer admission or mutation. A completed final
+    # export remains publishable if this container replaced its capture
+    # execution before the controller observed the durable receipt.
+    captured = withdrawal_receipt()
+    if captured:
+        receipt = {'state': 'WritesWithdrawn', 'applicationUID': required('BARTL_UID'),
+                   'capture': captured}
+        Path('/dev/termination-log').write_text(json.dumps(receipt))
+        print(json.dumps(receipt), flush=True)
+        raise SystemExit(1)
     with exclusive():
         authority()
         # Recreate orders upgrades, but not replacement after ordinary Pod deletion.
@@ -502,12 +535,18 @@ def capture(operation, execution, seconds):
             verify_capture(directory)
             current.update(state='Captured', path=str(directory), resumed=False)
             save(STATE / 'capture.json', current)
-            try:
-                authority(execution)
-                s6(True, SERVICES)
-                current['resumed'] = True
-            except Exception as error:
-                current['resumptionError'] = str(error)
+            if current['withdrawAfterCapture']:
+                # Final capture ends source write authority, not just intake.
+                # Preserve the gate across Pod/controller restarts until retirement.
+                current['withdrawn'] = True
+                save(STATE / 'transition.json', current)
+            else:
+                try:
+                    authority(execution)
+                    s6(True, SERVICES)
+                    current['resumed'] = True
+                except Exception as error:
+                    current['resumptionError'] = str(error)
             save(STATE / 'capture.json', current)
             # Startup and controller completion use the same durable boundary.
             # Failed or interrupted resumption must survive CR removal/reinstall.
@@ -523,7 +562,10 @@ def begin_capture(operation, execution, seconds):
     if not OP.fullmatch(operation) or not 1 <= seconds <= 86400:
         raise RuntimeError('Invalid capture request or deadline')
     with exclusive():
-        authority(execution)
+        app = authority(execution)
+        admitted = app.get('status', {}).get('backup', {})
+        if admitted.get('captureOperation') != operation or admitted.get('execution') != execution:
+            raise RuntimeError('Capture operation no longer has current admission')
         existing = load(STATE / 'capture.json')
         if existing and existing['operation'] == operation:
             return result(existing)
@@ -531,7 +573,8 @@ def begin_capture(operation, execution, seconds):
         if existing and existing['state'] != 'Captured':
             raise RuntimeError('Conflicting or unresolved capture')
         current = {'operation': operation, 'execution': execution, 'state': 'Capturing',
-                   'startedAt': now(), 'resumed': False}
+                   'startedAt': now(), 'resumed': False,
+                   'withdrawAfterCapture': admitted.get('withdrawAfterCapture', False)}
         save(STATE / 'transition.json', current)
         save(STATE / 'capture.json', current)
     # Admission is durable before handoff. The child must not race our flock.

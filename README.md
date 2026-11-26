@@ -10,7 +10,7 @@ New deployment: follow the steps below. Existing deployment: [resume access](#re
 
 ## Package and target
 
-Candidate **0.3.0-dev.2** targets Paperless 3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1 through API `paperless.bartl.sh/v1alpha2`. Updates replace the installation on independent storage; in-place package/native upgrades and predecessor Kubernetes-resource adoption are not supported. Format-1 package backups from Paperless **3.3.0 and 3.3.1** are supported inputs. The target automatically imports with the matching immutable runtime, then performs the native 3.3.0 → 3.3.1 transition when necessary. Both runtime digests ship in the selected chart. This transition updates the Tantivy search schema from 3 to 4; it is not a new Django database migration. Other source versions and downgrades are refused.
+Candidate **0.3.0-dev.3** targets Paperless 3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1 through API `paperless.bartl.sh/v1alpha2`. Updates replace the installation on independent storage; in-place package/native upgrades and predecessor Kubernetes-resource adoption are not supported. Format-1 package backups from Paperless **3.3.0 and 3.3.1** are supported inputs. The target automatically imports with the matching immutable runtime, then performs the native 3.3.0 → 3.3.1 transition when necessary. Both runtime digests ship in the selected chart. This transition updates the Tantivy search schema from 3 to 4; it is not a new Django database migration. Other source versions and downgrades are refused.
 
 Use the [operator tools](https://github.com/bartlapp/bartl-app/blob/main/docs/operator-workstation.md#check-the-workstation) and a Linux amd64 single-node K3s profile with enforced NetworkPolicy, Traefik in kube-system and four ReadWriteOnce claims. Storage must support POSIX permissions, locks, atomic rename and fsync. Native setup needs root; ordinary services use UID 1000. One namespace holds one release named paperless and no unrelated workloads. The supported profile has one container, one Celery worker/thread and local-path storage, not HA or multi-node RWO placement. [Base](https://github.com/bartlapp/base-k3s/blob/main/README.md) supplies this profile.
 
@@ -34,7 +34,7 @@ umask 077
 kubectl --context "$KUBE_CONTEXT" get nodes,storageclass
 mkdir -p "$WORK_DIR/packages"
 CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-export PACKAGE_VERSION=0.3.0-dev.2
+export PACKAGE_VERSION=0.3.0-dev.3
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$PACKAGE_VERSION" --untar --untardir "$CHART_STAGE"
 export PACKAGE_VERSION
 PACKAGE_VERSION=$(helm show chart "$CHART_STAGE/bartl-paperless" | yq -er '.version')
@@ -628,7 +628,7 @@ Before interrupting a reachable source, acquire the selected replacement package
 export TARGET_PACKAGE=paperless-replacement
 mkdir -p "$WORK_DIR/packages"
 TARGET_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-export TARGET_PACKAGE_VERSION=0.3.0-dev.2
+export TARGET_PACKAGE_VERSION=0.3.0-dev.3
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$TARGET_PACKAGE_VERSION" --untar --untardir "$TARGET_STAGE"
 export TARGET_PACKAGE_VERSION
 TARGET_PACKAGE_VERSION=$(helm show chart "$TARGET_STAGE/bartl-paperless" | yq -er '.version')
@@ -640,7 +640,7 @@ if [ -n "$MATCHING_PACKAGE" ]; then TARGET_PACKAGE="$MATCHING_PACKAGE"; fi
 
 ### Final capture and source retirement
 
-These source commands address v1alpha2. For a pre-v1alpha2 source, use its retained release's write-withdrawal, final-capture, stop and removal procedures instead; do not apply the target chart or API to it. Continue here at target preparation with its verified point and independently retained inputs.
+This final-capture operation is supplied by 0.3.0-dev.3. For an earlier source, use its retained release's capture and retirement procedures and complete its writer withdrawal before target preparation; do not send an unsupported annotation or apply this controller in place. Supported backup/data versions do not certify an older package's production-withdrawal behavior.
 
 For a reachable source, load its retained context and [prepare the chart-backed operation](#prepare-a-chart-backed-operation), then withdraw all intake paths and prevent concurrent publication/configuration changes. Keep its writer execution running for final capture. Disable public ingress and schedules, then capture:
 
@@ -663,23 +663,27 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
     any(.status.conditions[]; .type == "Ready" and .status == "True" and .observedGeneration == $g)'
 ```
 
-Let already admitted capture/publication finish before continuing. With intake still closed, request a fresh capture below. A publication retry can finish an older export; the capture-operation comparison rejects that result as the final capture. If it rejects an otherwise successful publication, keep intake closed and repeat only this capture block to obtain a new export.
+Let already admitted capture/publication finish. The final request below settles work and captures it **without resuming native writers**, including scheduler/consumer/worker activity. The controller removes the idle application Pod and publishes the protected export with database/broker still available. An older retained ordinary capture may be published first; its receipt lacks `withdrawn: true`. In that case keep intake closed and repeat this request block once to create the final withdrawn point. Retrying publication of an already withdrawn point is valid: no new source work has been admitted since that capture.
+
+If the publication acknowledgement or shell session is lost, repeat the same final-request block. An already-published withdrawn source acknowledges its retained point without creating another capture or admitting writers; capture and publication timestamps remain unchanged.
 
 ```bash
-PREVIOUS_CAPTURE=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json |
-  jq -r '.status.backup.captureOperation // ""')
 REQUEST="final-$(openssl rand -hex 8)"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" annotate paperlessapplication/paperless \
-  "paperless.bartl.sh/backup-request=$REQUEST" --overwrite
+  "paperless.bartl.sh/backup-request=$REQUEST" \
+  "paperless.bartl.sh/withdraw-after-capture=$REQUEST" --overwrite
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
   --for="jsonpath={.status.backup.request}=$REQUEST" --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
   --for=jsonpath='{.status.backup.phase}'=Published --timeout=6h -o json > "$INSTALL_DIR/backup-result.json"
-jq -e --arg request "$REQUEST" --arg previous "$PREVIOUS_CAPTURE" '.status.backup |
+jq -e --arg request "$REQUEST" '.status.backup |
   .request == $request and .phase == "Published" and
-  (.captureOperation | length > 0) and .captureOperation != $previous and
+  .withdrawAfterCapture == true and .withdrawn == true and .resumed != true and
+  (.captureOperation | length > 0) and
   (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/backup-result.json"
 ```
+
+`WritesWithdrawn` is not Ready and is not whole-application Stopped. Normal backup publication failure permits healthy resumption; this explicitly withdrawn source must remain closed even if publication fails. Correct publication access and repeat the request to publish the retained point. Final withdrawal survives controller/component restart and is a retirement operation, not an ordinary reversible stop: do not clear its native marker or reuse its storage as a replacement. Interrupted or uncertain native capture remains failed; only a completely published point is eligible for reconstruction.
 
 Require final capture inclusion and any required secondary protection. Then stop the source and prevent restart:
 
@@ -700,7 +704,7 @@ Retire the stopped source controller and execution resources while retaining its
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json \
   > "$SOURCE_DIR/retired-application.json"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" delete paperlessapplication/paperless --wait=true --timeout=10m
-helm uninstall "$RELEASE" --kube-context "$KUBE_CONTEXT" -n "$NS" --wait --timeout=5m
+helm uninstall "$RELEASE" --kube-context "$KUBE_CONTEXT" -n "$NS" --cascade=foreground --wait --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,deployments,jobs,ingresses
 ```
 
@@ -974,7 +978,7 @@ Load retained context, retain needed diagnostics and complete [whole-application
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" delete paperlessapplication/paperless --wait=true --timeout=10m
-helm uninstall "$RELEASE" --kube-context "$KUBE_CONTEXT" -n "$NS" --wait --timeout=5m
+helm uninstall "$RELEASE" --kube-context "$KUBE_CONTEXT" -n "$NS" --cascade=foreground --wait --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc,secrets
 ```
 
@@ -1036,7 +1040,7 @@ The selected archive ships the service interface and static defaults. Inputs und
 
 Connection rendering exposes HTTPS, OIDC/backup requests, credential bindings and storage claims. Configuration rendering exposes the configuration Secret environment. Protected values are added locally, never to VALUES. Refresh derived bindings after inputs change. Deployment selection validates namespace, Helm release and package version; its sole operational override is static `ingressEnabled`. Runtime intent has no installation-values copy.
 
-Exact-artifact qualification belongs in the existing release record. Historical 0.2.1 and 0.3.0-dev.1 results do not qualify changed paths in 0.3.0-dev.2. Standalone acceptance remains separate from later coordinated multi-application qualification.
+Exact-artifact qualification belongs in the existing release record. Historical 0.2.1, 0.3.0-dev.1 and 0.3.0-dev.2 results do not qualify changed paths in 0.3.0-dev.3. Standalone acceptance remains separate from later coordinated multi-application qualification.
 
 ## Maintainer procedures and evidence
 
@@ -1113,7 +1117,7 @@ Historical 0.1.0 chart archive SHA-256: `dc87e82d5350a4f31850ef801521f836e4567e8
 
 Native observations on 24 October showed queued work surviving tested replacements, but interrupted active work did not settle within the observation window and revocation did not survive worker replacement. Warm shutdown did not independently prove writer/descendant termination. These findings justify settled-work capture, not replay/reconciliation. The experimental supervisor/scripts/chart/reconciliation code retired in `82e4357` is not the current design.
 
-The current controller binds native work to application/operation, Pod UID, container ID and execution UUID. Target-local locking, database/file binding and pending-transition markers prevent concurrent or ambiguous import/capture. The s6 prerequisite runs before migrations/init-complete; upstream custom-init alone logs errors and continues. Capture requires ended writer descendants and database sessions, preserves native media-lock ownership and retains the marker until same-execution resumption is recorded. Completion after controller loss can authorize publication, never mutation/resumption of a replacement execution. Keep these implementation boundaries distinct from operator instructions.
+The controller binds native work to application/operation, Pod UID, container ID and execution UUID. Target-local locking, database/file binding and pending-transition markers exclude concurrent or ambiguous import/capture. The s6 prerequisite runs before migrations/init-complete; upstream custom-init alone logs errors and continues. Capture ends writer descendants and database sessions, preserves media-lock ownership and records same-execution resumption. Request-bound final withdrawal instead keeps the native gate closed and retires application execution before publication. This automates the required source-background withdrawal; it closes the gap where an ordinary capture could resume scheduled production work before operator stop. Publication retries read the retained export without recreating source writers. Target import never copies this source-local authority or operation state.
 
 ## Building and publishing
 

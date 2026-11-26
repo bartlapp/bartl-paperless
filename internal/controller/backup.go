@@ -31,10 +31,16 @@ func captureDeadline(a *api.PaperlessApplication) error {
 func completedCapture(a *api.PaperlessApplication, st *NativeStatus) bool {
 	c := st.Capture
 	b := &a.Status.Backup
-	return st.Failure == "" && c != nil && c.State == "Captured" &&
-		c.Operation == b.CaptureOperation && c.Execution == b.Execution &&
-		c.Path == "/staging/captures/"+b.CaptureOperation && c.CapturedAt != "" &&
-		c.Resumed && c.ResumptionError == ""
+	if c == nil || c.State != "Captured" || c.Operation != b.CaptureOperation ||
+		c.Execution != b.Execution || c.Path != "/staging/captures/"+b.CaptureOperation ||
+		c.CapturedAt == "" || c.ResumptionError != "" {
+		return false
+	}
+	if b.WithdrawAfterCapture {
+		return c.Withdrawn && !c.Resumed &&
+			(st.Failure == "" || expectedCaptureTransition(st.Failure, b.CaptureOperation, b.Execution))
+	}
+	return st.Failure == "" && c.Resumed && !c.Withdrawn
 }
 
 func (r *Reconciler) backupFailure(ctx context.Context, a *api.PaperlessApplication, err error, isolate bool) (ctrl.Result, error) {
@@ -68,15 +74,19 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 				b.CapturedAt = c.CapturedAt
 				b.Resumed = c.Resumed
 				b.ResumptionError = c.ResumptionError
+				if c.Withdrawn && (!b.WithdrawAfterCapture || c.Resumed) {
+					return r.backupFailure(ctx, a, fmt.Errorf("capture withdrawal does not match admitted intent"), true)
+				}
 				if c.ResumptionError != "" {
 					return r.backupFailure(ctx, a, fmt.Errorf("native resumption failed: %s", c.ResumptionError), true)
 				}
-				if !c.Resumed {
+				if !completedCapture(a, st) {
 					if err := captureDeadline(a); err != nil {
 						return r.backupFailure(ctx, a, err, true)
 					}
 					return r.save(ctx, a)
 				}
+				b.Withdrawn = c.Withdrawn
 				b.Phase = "Captured"
 				return r.save(ctx, a)
 			case "Capturing":
@@ -170,6 +180,16 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 		condition(a, "BackupFailed", metav1.ConditionFalse, "Published", "Capture completely published and verified")
 		return r.save(ctx, a)
 	}
+	if b.Withdrawn && b.Phase == "Published" {
+		// Repeating final withdrawal after a lost acknowledgement returns the
+		// same point: no source writes or new capture have occurred since it.
+		request := a.Annotations["paperless.bartl.sh/backup-request"]
+		if request != "" && a.Annotations["paperless.bartl.sh/withdraw-after-capture"] == request {
+			b.Request = request
+			b.LastManualRequest = request
+		}
+		return r.save(ctx, a)
+	}
 	// Manual and scheduled requests converge here; no second capture dispatcher.
 	request := ""
 	manualRequest := a.Annotations["paperless.bartl.sh/backup-request"]
@@ -182,7 +202,7 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 		v := metav1.NewTime(now)
 		b.ScheduleBaseline = &v
 	}
-	if request == "" && a.Spec.Backup.Schedule != "" {
+	if request == "" && !b.Withdrawn && a.Spec.Backup.Schedule != "" {
 		s, err := schedule(a)
 		if err != nil {
 			return r.backupFailure(ctx, a, err, false)
@@ -222,6 +242,8 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 	remember(a, b.Publication)
 	b.Resumed = false
 	b.ResumptionError = ""
+	b.WithdrawAfterCapture = a.Annotations["paperless.bartl.sh/withdraw-after-capture"] == request
+	b.Withdrawn = false
 	b.Request = request
 	b.CaptureOperation = uuid.NewString()
 	b.AdmittedAt = now.UTC().Format(time.RFC3339Nano)
