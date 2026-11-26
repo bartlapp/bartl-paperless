@@ -551,10 +551,12 @@ Monitor staging, overdue/failed requests, capture age and required independent r
 Starting condition: a running, Ready deployment with capture/publication settled and no state-changing native work executing. Edit the intended retained configuration, then [prepare the chart-backed operation](#prepare-a-chart-backed-operation) to refresh declarations. Apply scheduling changes without changing run or routing intent:
 
 ```bash
-helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
+helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values --force-conflicts -f "$VALUES" \
   --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 ```
+
+`--force-conflicts` transfers the chart's static fields from the initial `kubectl-create` manager to Helm. The chart omits both runtime fields, so this does not authorize resetting live intent. Use the same static Helm command for a deliberately stopped deployment, then wait for Stopped rather than Ready; for an enabled zero-replica deployment, verify ApplicationStopped and available database/broker instead. Do not change package/native image selection in place.
 
 Use the dedicated version-transition and replacement procedures for those operations. Configuration changes do not repair failed state.
 
@@ -651,7 +653,7 @@ BACKUP_SCHEDULE=$(cat "$SOURCE_DIR/backup-schedule-before-operation")
 export BACKUP_SCHEDULE
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = false |
   .services[strenv(INSTANCE)].backup.schedule = ""' "$VALUES"
-helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
+helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values --force-conflicts -f "$VALUES" \
   --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
@@ -950,7 +952,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" delete ingress/paperless-review --wai
 kubectl --context "$KUBE_CONTEXT" -n "$NS" delete middleware/paperless-review
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = true |
   .services[strenv(INSTANCE)].backup.schedule = strenv(BACKUP_SCHEDULE)' "$VALUES"
-helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
+helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values --force-conflicts -f "$VALUES" \
   --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json |
