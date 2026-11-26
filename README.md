@@ -904,6 +904,10 @@ yq -i '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = true |
   .services[strenv(INSTANCE)].backup.schedule = strenv(BACKUP_SCHEDULE)' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values -f "$VALUES" \
   --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Ready --timeout=10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json |
+  jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
+    any(.status.conditions[]; .type == "Ready" and .status == "True" and .observedGeneration == $g)'
 ```
 
 Verify ordinary access and the restored schedule before removing `"$SOURCE_DIR/backup-schedule-before-operation"`. Keep that temporary input independently available while recovery is unfinished; in another shell select the same source-input directory before activation.
