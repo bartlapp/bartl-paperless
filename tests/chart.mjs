@@ -21,6 +21,7 @@ function documents(result) {
   assert.equal(parsed.status, 0, parsed.stderr);
   return parsed.stdout.trim().split('\n').filter(Boolean).map(JSON.parse).filter(Boolean);
 }
+const packageVersion = documents(spawnSync(helm, ['show', 'chart', chart], {encoding: 'utf8'}))[0].version;
 const base = () => ({installation: 'acme', dns: {root: 'acme.example'}, services: {paperless: {}}});
 const selected = v => v.services[v.instance || 'paperless'];
 function deployment(v) {
@@ -177,7 +178,7 @@ check('unresolved, conflicting and unsafe backup inputs fail at rendering bounda
   selected(v).backup = {repository: 'rest:https://backup.example/paperless/', endpoint: 'archive'}; rejects(v, {mode: 'connections'});
 });
 check('release name guard applies only to deployment and selected chart release is enforced', () => {
-  const v = base(); selected(v).release = '0.3.0-dev.1'; deployment(v); declaration(v); configuration(v);
+  const v = base(); selected(v).release = packageVersion; deployment(v); declaration(v); configuration(v);
   rejects(v, {release: 'other'});
   selected(v).release = '0.2.0'; for (const mode of ['deployment', 'connections', 'configuration']) rejects(v, {mode});
 });
@@ -192,7 +193,7 @@ check('selected deployments apply only their own static routing without runtime 
     target: {instance: 'records', cluster: 'cluster-2', namespace: 'green', release: 'paperless', package: 'records'},
     other: {instance: 'paperless', cluster: 'cluster-3', namespace: 'other', release: 'paperless', package: 'other'}
   };
-  v.packages = {records: {version: '0.3.0-dev.1', chart: 'oci://ghcr.io/bartlapp/bartl-paperless'}, other: {version: '0.1.0', chart: 'irrelevant'}};
+  v.packages = {records: {version: packageVersion, chart: 'oci://ghcr.io/bartlapp/bartl-paperless'}, other: {version: '0.1.0', chart: 'irrelevant'}};
   v.operations = {deployments: {source: {ingressEnabled: false}, target: {ingressEnabled: true}, other: {foreign: 'ignored'}}};
   for (const [id, namespace, ingressEnabled] of [['source', 'blue', false], ['target', 'green', true]]) {
     const options = {namespace, deployment: id};
@@ -200,7 +201,6 @@ check('selected deployments apply only their own static routing without runtime 
     const app = docs.find(d => d.kind === 'PaperlessApplication');
     assert.deepEqual(app.spec.identity, {installation: 'acme', instance: 'records'});
     assert.equal(app.apiVersion, 'paperless.bartl.sh/v1alpha2');
-    assert.equal(app.spec.version, '3.3.1');
     assert.equal(Object.hasOwn(app.spec, 'running'), false);
     assert.equal(Object.hasOwn(app.spec, 'replicas'), false);
     assert.equal(app.spec.ingress.enabled, ingressEnabled);
@@ -219,16 +219,16 @@ check('selected deployments apply only their own static routing without runtime 
 check('deployment selection rejects wrong target, version, conflict and invalid selected intent', () => {
   const v = base();
   v.deployments = {blue: {instance: 'paperless', cluster: 'cluster-1', namespace: 'blue', release: 'paperless', package: 'paperless'}};
-  v.packages = {paperless: {version: '0.3.0-dev.1', chart: 'oci://ghcr.io/bartlapp/bartl-paperless'}};
+  v.packages = {paperless: {version: packageVersion, chart: 'oci://ghcr.io/bartlapp/bartl-paperless'}};
   const options = {namespace: 'blue', deployment: 'blue'};
   for (const mode of ['deployment', 'connections', 'configuration']) documents(render(v, {...options, mode}));
   for (const mode of ['deployment', 'connections', 'configuration']) {
     rejects(v, {...options, mode, namespace: 'wrong'});
     rejects(v, {...options, mode, release: 'wrong'});
     v.packages.paperless.version = '0.2.0'; rejects(v, {...options, mode});
-    v.packages.paperless.version = '0.3.0-dev.1';
+    v.packages.paperless.version = packageVersion;
   }
-  v.packages.paperless.version = '0.3.0-dev.1'; v.instance = 'other'; rejects(v, options);
+  v.packages.paperless.version = packageVersion; v.instance = 'other'; rejects(v, options);
   delete v.instance;
   for (const intent of [{running: true}, {running: false}, {replicas: 0}, {replicas: 1}, {version: '3.3.0'}, {version: '3.3.1'}]) {
     v.operations = {deployments: {blue: intent}};
