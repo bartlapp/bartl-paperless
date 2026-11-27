@@ -4,7 +4,7 @@ Paperless over HTTPS with PostgreSQL, Redis, automatic initialization/reconstruc
 
 New deployment: follow the steps below. Existing deployment: [resume access](#resume-an-existing-deployment), then select an operation. Use workstation Bash, keep tracing off and stop at a failed command. Creation is not a replay or partial-state repair program.
 
-This checkout contains an unqualified source change after candidate `0.3.0-dev.7`: final capture now uses ordinary stop intent instead of withdrawal/cancellation state. The retained dev.7 chart/image pins do not implement these changed procedures. Build and pin a new immutable candidate before executing this checkout's instructions; use dev.7's retained README only with dev.7.
+This checkout selects unqualified candidate `0.3.0-dev.8`: final capture uses ordinary stop intent instead of withdrawal/cancellation state. Use its exact pinned archive and images with these procedures. Earlier candidates and their evidence do not qualify the changed lifecycle.
 
 - [Install](#package-and-target), [resume](#resume-an-existing-deployment) and [operate](#stop-start-and-restart)
 - [Capture](#capture-publication-and-retry), [recover and update by replacement](#recovery-and-replacement-upgrade)
@@ -12,7 +12,7 @@ This checkout contains an unqualified source change after candidate `0.3.0-dev.7
 
 ## Package and target
 
-Candidate **0.3.0-dev.7** targets Paperless 3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1 through API `paperless.bartl.sh/v1alpha2`. Updates replace the installation on independent storage; in-place package/native upgrades and predecessor Kubernetes-resource adoption are not supported. Format-2 complete database/file backups from Paperless **3.3.0 and 3.3.1** are supported inputs. The target automatically restores with the matching immutable runtime, then performs the native 3.3.0 → 3.3.1 transition when necessary. Both runtime digests ship in the selected chart. This transition updates the Tantivy search schema from 3 to 4; it is not a new Django database migration. Other source versions, downgrades and format-1 document exports are refused. Format-1 exports omit workflow execution history and cannot provide complete application-state recovery; historical candidates and evidence remain separate.
+Candidate **0.3.0-dev.8** targets Paperless 3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1 through API `paperless.bartl.sh/v1alpha2`. Updates replace the installation on independent storage; in-place package/native upgrades and predecessor Kubernetes-resource adoption are not supported. Format-2 complete database/file backups from Paperless **3.3.0 and 3.3.1** are supported inputs. The target automatically restores with the matching immutable runtime, then performs the native 3.3.0 → 3.3.1 transition when necessary. Both runtime digests ship in the selected chart. This transition updates the Tantivy search schema from 3 to 4; it is not a new Django database migration. Other source versions, downgrades and format-1 document exports are refused. Format-1 exports omit workflow execution history and cannot provide complete application-state recovery; historical candidates and evidence remain separate.
 
 Use the [operator tools](https://github.com/bartlapp/bartl-app/blob/main/docs/operator-workstation.md#check-the-workstation) and a Linux amd64 single-node K3s profile with enforced NetworkPolicy, Traefik in kube-system and four ReadWriteOnce claims. Storage must support POSIX permissions, locks, atomic rename and fsync. Native setup needs root; ordinary services use UID 1000. One namespace holds one release named paperless and no unrelated workloads. The supported profile has one container, one Celery worker/thread and local-path storage, not HA or multi-node RWO placement. [Base](https://github.com/bartlapp/base-k3s/blob/main/README.md) supplies this profile.
 
@@ -36,7 +36,7 @@ umask 077
 kubectl --context "$KUBE_CONTEXT" get nodes,storageclass
 mkdir -p "$WORK_DIR/packages"
 CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-export PACKAGE_VERSION=0.3.0-dev.7
+export PACKAGE_VERSION=0.3.0-dev.8
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$PACKAGE_VERSION" --untar --untardir "$CHART_STAGE"
 export PACKAGE_VERSION
 PACKAGE_VERSION=$(helm show chart "$CHART_STAGE/bartl-paperless" | yq -er '.version')
@@ -632,7 +632,7 @@ Before interrupting a reachable source, acquire the selected replacement package
 export TARGET_PACKAGE=paperless-replacement
 mkdir -p "$WORK_DIR/packages"
 TARGET_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-export TARGET_PACKAGE_VERSION=0.3.0-dev.7
+export TARGET_PACKAGE_VERSION=0.3.0-dev.8
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$TARGET_PACKAGE_VERSION" --untar --untardir "$TARGET_STAGE"
 export TARGET_PACKAGE_VERSION
 TARGET_PACKAGE_VERSION=$(helm show chart "$TARGET_STAGE/bartl-paperless" | yq -er '.version')
