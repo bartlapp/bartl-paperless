@@ -123,7 +123,7 @@ def api(path):
         return json.load(response)
 
 
-def authority(execution=None, capture_operation=None, publication=None):
+def authority(execution=None, capture_operation=None, publication=None, require_running=True):
     ns, name = required('BARTL_NAMESPACE'), required('BARTL_NAME')
     app = api(f'/apis/paperless.bartl.sh/v1alpha2/namespaces/{ns}/paperlessapplications/{name}')
     if (app['metadata']['uid'] != required('BARTL_UID') or app['metadata'].get('deletionTimestamp')
@@ -143,7 +143,7 @@ def authority(execution=None, capture_operation=None, publication=None):
                 or backup.get('phase') != 'Publishing'
                 or backup.get('publication', {}).get('id') != required('BARTL_OPERATION')):
             raise RuntimeError('Publication authority withdrawn')
-    elif app['spec']['running'] is not True or app['spec']['replicas'] != 1:
+    elif require_running and (app['spec']['running'] is not True or app['spec']['replicas'] != 1):
         raise RuntimeError('Running authority withdrawn')
     for claim in app['spec']['claims'].values():
         pvc = api(f'/api/v1/namespaces/{ns}/persistentvolumeclaims/{claim}')
@@ -409,13 +409,18 @@ def gate():
             raise BlockingIOError('Previous application Pod has not retired; retry native admission')
         marker = load(STATE / 'transition.json')
         captured = load(STATE / 'capture.json')
+        binding = load(STATE / 'binding.json', {}) if marker else {}
         if (marker and marker.get('state') == 'Capturing' and captured
-                and captured.get('state') == 'Captured'
+                and binding.get('applicationUID') == required('BARTL_UID')
+                and binding.get('identity') == identity()
                 and captured.get('operation') == marker.get('operation')
-                and captured.get('execution') == marker.get('execution')
-                and captured.get('path') == str(STAGING / 'captures' / captured['operation'])):
-            verify_capture(captured['path'])
-            (STATE / 'transition.json').unlink()
+                and captured.get('execution') == marker.get('execution')):
+            if (captured.get('state') == 'Captured'
+                    and captured.get('path') == str(STAGING / 'captures' / captured['operation'])):
+                verify_capture(captured['path'])
+                (STATE / 'transition.json').unlink()
+            elif captured.get('state') == 'Failed' and captured.get('sourceIntact'):
+                (STATE / 'transition.json').unlink()
         observed = observe()
         if observed != {'state': 'Existing', 'version': version()}:
             raise RuntimeError('Native startup requires successful current-version preparation')
@@ -523,6 +528,7 @@ def capture(operation, execution, seconds):
         if (not current or current.get('state') != 'Capturing'
                 or current['operation'] != operation or current['execution'] != execution):
             raise RuntimeError('Capture admission changed')
+        quiesced = False
         try:
             authority(execution, operation)
             s6(False, SERVICES[:3])
@@ -556,6 +562,7 @@ def capture(operation, execution, seconds):
                 time.sleep(1)
             authority(execution, operation)
             assert_settled_state()
+            quiesced = True
             directory = STAGING / 'captures' / operation
             directory.mkdir(mode=0o700, parents=True, exist_ok=False)
             current['capturedAt'] = now()
@@ -591,7 +598,7 @@ def capture(operation, execution, seconds):
             # is verified, ordinary startup must not require an unlock procedure.
             (STATE / 'transition.json').unlink()
             try:
-                app = authority(execution, operation)
+                app = authority(execution, require_running=False)
                 if app['spec']['running'] is True and app['spec']['replicas'] == 1:
                     s6(True, SERVICES)
                     current['resumed'] = True
@@ -599,8 +606,32 @@ def capture(operation, execution, seconds):
                 current['resumptionError'] = str(error)
             save(STATE / 'capture.json', current)
         except Exception as error:
-            current.update(state='Failed', error=str(error))
+            if current.get('state') == 'Captured':
+                # Losing completion bookkeeping does not undo a verified point.
+                current['resumptionError'] = str(error)
+                save(STATE / 'capture.json', current)
+                raise
+            intact = False
+            if quiesced:
+                try:
+                    # Snapshot work only reads the source. Recheck native state
+                    # after its failure before allowing ordinary operation.
+                    assert_settled_state()
+                    intact = True
+                except Exception:
+                    pass
+            current.update(state='Failed', error=str(error), sourceIntact=intact)
             save(STATE / 'capture.json', current)
+            if intact:
+                (STATE / 'transition.json').unlink()
+                try:
+                    app = authority(execution, require_running=False)
+                    if app['spec']['running'] is True and app['spec']['replicas'] == 1:
+                        s6(True, SERVICES)
+                        current['resumed'] = True
+                except Exception as resume_error:
+                    current['resumptionError'] = str(resume_error)
+                save(STATE / 'capture.json', current)
             raise
 
 
@@ -616,7 +647,8 @@ def begin_capture(operation, execution, seconds):
         if existing and existing['operation'] == operation:
             return result(existing)
         observe()
-        if existing and existing['state'] != 'Captured':
+        if existing and not (existing['state'] == 'Captured'
+                             or (existing['state'] == 'Failed' and existing.get('sourceIntact'))):
             raise RuntimeError('Conflicting or unresolved capture')
         current = {'operation': operation, 'execution': execution, 'state': 'Capturing',
                    'startedAt': now(), 'resumed': False}

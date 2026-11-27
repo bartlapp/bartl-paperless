@@ -40,6 +40,14 @@ func completedCapture(a *api.PaperlessApplication, st *NativeStatus) bool {
 	return known && (c.Resumed || c.ResumptionError != "" || !running(a) || (st.Execution != "" && st.Execution != b.Execution))
 }
 
+func intactCaptureFailure(a *api.PaperlessApplication, st *NativeStatus) bool {
+	c := st.Capture
+	b := &a.Status.Backup
+	return c != nil && c.State == "Failed" && c.SourceIntact &&
+		c.Operation == b.CaptureOperation && c.Execution == b.Execution &&
+		(st.Failure == "" || expectedCaptureTransition(st.Failure, b.CaptureOperation, b.Execution))
+}
+
 func (r *Reconciler) backupFailure(ctx context.Context, a *api.PaperlessApplication, err error, isolate bool) (ctrl.Result, error) {
 	a.Status.Backup.Phase = "Failed"
 	a.Status.Backup.Error = err.Error()
@@ -53,7 +61,7 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 	b := &a.Status.Backup
 	switch b.Phase {
 	case "Admitting", "Capturing":
-		if !completedCapture(a, st) && (b.PodName != p.Name || b.PodUID != string(p.UID) || b.ContainerID != containerID(p) || b.Execution != st.Execution) {
+		if !completedCapture(a, st) && !intactCaptureFailure(a, st) && (b.PodName != p.Name || b.PodUID != string(p.UID) || b.ContainerID != containerID(p) || b.Execution != st.Execution) {
 			return r.backupFailure(ctx, a, fmt.Errorf("capture execution changed; incomplete capture remains isolated"), true)
 		}
 		c := st.Capture
@@ -63,7 +71,7 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 			}
 			switch c.State {
 			case "Failed":
-				return r.backupFailure(ctx, a, fmt.Errorf("native capture failed: %s", c.Error), true)
+				return r.backupFailure(ctx, a, fmt.Errorf("native capture failed: %s", c.Error), !intactCaptureFailure(a, st))
 			case "Captured":
 				if c.CapturedAt == "" || c.Path != "/staging/captures/"+b.CaptureOperation {
 					return r.backupFailure(ctx, a, fmt.Errorf("capture result lacks protected path and capture boundary"), true)
@@ -101,7 +109,7 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 		if b.Phase == "Capturing" {
 			return r.backupFailure(ctx, a, fmt.Errorf("admitted capture disappeared from its execution"), true)
 		}
-		if c != nil && (c.State == "Capturing" || c.State == "Failed") {
+		if c != nil && (c.State == "Capturing" || (c.State == "Failed" && !c.SourceIntact)) {
 			return r.backupFailure(ctx, a, fmt.Errorf("conflicting native capture %s", c.Operation), true)
 		}
 		// Read status again immediately before mutation; transport loss is not proof
@@ -119,7 +127,7 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 		if expectedCaptureTransition(fresh.Failure, b.CaptureOperation, b.Execution) {
 			return r.save(ctx, a)
 		}
-		if fresh.Failure != "" || (fresh.Capture != nil && (fresh.Capture.State == "Capturing" || fresh.Capture.State == "Failed")) {
+		if fresh.Failure != "" || (fresh.Capture != nil && (fresh.Capture.State == "Capturing" || (fresh.Capture.State == "Failed" && !fresh.Capture.SourceIntact))) {
 			return r.backupFailure(ctx, a, fmt.Errorf("native state changed before capture admission"), true)
 		}
 		if !fresh.Ready {
@@ -219,7 +227,7 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 	if !st.Ready || !podReady(p) {
 		return r.save(ctx, a)
 	}
-	if st.Capture != nil && (st.Capture.State == "Capturing" || st.Capture.State == "Failed") {
+	if st.Capture != nil && (st.Capture.State == "Capturing" || (st.Capture.State == "Failed" && !st.Capture.SourceIntact)) {
 		return r.backupFailure(ctx, a, fmt.Errorf("unresolved native capture prevents admission"), true)
 	}
 	remember(a, b.Publication)

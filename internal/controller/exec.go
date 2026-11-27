@@ -50,6 +50,7 @@ type CaptureObservation struct {
 	StartedAt       string `json:"startedAt"`
 	CapturedAt      string `json:"capturedAt"`
 	Resumed         bool   `json:"resumed"`
+	SourceIntact    bool   `json:"sourceIntact"`
 	ResumptionError string `json:"resumptionError"`
 }
 type NativeStatus struct {

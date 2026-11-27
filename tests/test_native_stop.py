@@ -56,5 +56,38 @@ class StoppedPublicationTests(unittest.TestCase):
             self.assertFalse(app['spec']['running'])
 
 
+class IntactSourceStartupTests(unittest.TestCase):
+    def test_ordinary_start_finishes_only_its_intact_capture_bookkeeping(self):
+        for marker_state in ('Capturing', 'Preparing'):
+            with self.subTest(marker_state=marker_state), tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+                root = Path(directory)
+                stack.enter_context(patch.object(native, 'STATE', root))
+                stack.enter_context(patch.dict(os.environ, {
+                    'BARTL_UID': 'owner', 'BARTL_NAMESPACE': 'ns', 'BARTL_POD_UID': 'pod',
+                    'BARTL_INSTALLATION': 'installation', 'BARTL_INSTANCE': 'records',
+                }))
+                native.save(root / 'binding.json', {'applicationUID': 'owner', 'identity': native.identity()})
+                native.save(root / 'transition.json', {'state': marker_state, 'operation': 'capture', 'execution': 'execution'})
+                native.save(root / 'capture.json', {'state': 'Failed', 'sourceIntact': True,
+                                                    'operation': 'capture', 'execution': 'execution'})
+                stack.enter_context(patch.object(native, 'authority'))
+                stack.enter_context(patch.object(native, 'api', return_value={'items': [{'metadata': {'uid': 'pod'}}]}))
+                stack.enter_context(patch.object(native, 'version', return_value='3.3.1'))
+                stack.enter_context(patch.object(native, 'Path', side_effect=lambda p:
+                    root / 'execution' if p == '/run/bartl-execution' else Path(p)))
+                def observe():
+                    if (root / 'transition.json').exists():
+                        raise RuntimeError('Unresolved native transition')
+                    return {'state': 'Existing', 'version': '3.3.1'}
+                stack.enter_context(patch.object(native, 'observe', side_effect=observe))
+                if marker_state == 'Capturing':
+                    native.gate()
+                    self.assertTrue((root / 'execution').exists())
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'Unresolved native transition'):
+                        native.gate()
+                    self.assertFalse((root / 'execution').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

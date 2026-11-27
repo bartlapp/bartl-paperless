@@ -867,3 +867,45 @@ func TestCompletedCaptureResumptionErrorAfterRestartDoesNotFailSource(t *testing
 		t.Fatalf("known complete point and healthy replacement became damaged source: %#v", a.Status)
 	}
 }
+
+func TestConfirmedIntactSourceCaptureFailureIsNotLifecycleFailure(t *testing.T) {
+	for _, intact := range []bool{false, true} {
+		r, ctx, a, p := captureFixture(t)
+		st := &NativeStatus{Execution: "replacement-execution",
+			Failure: `{"state":"Capturing","operation":"capture","execution":"execution"}`,
+			Capture: &CaptureObservation{State: "Failed", Operation: "capture",
+				Execution: "execution", Error: "staging is read-only", SourceIntact: intact}}
+		if _, err := r.backup(ctx, a, p, st); err != nil {
+			t.Fatal(err)
+		}
+		if a.Status.Backup.Phase != "Failed" || a.Status.Backup.CapturedAt != "" ||
+			(a.Status.Failure == "") != intact {
+			t.Fatalf("source integrity classification or point eligibility lost: %#v", a.Status)
+		}
+	}
+}
+
+func TestNewCaptureAfterIntactFailureReachesNativeAdmission(t *testing.T) {
+	r, ctx, a, p := captureFixture(t)
+	a.Annotations = map[string]string{"paperless.bartl.sh/backup-request": "new"}
+	if err := r.Update(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	a.Status.Backup.Phase = "Failed"
+	e := &lostResponseExecutor{Status: NativeStatus{Execution: "execution", Ready: true,
+		Capture: &CaptureObservation{State: "Failed", SourceIntact: true,
+			Operation: "capture", Execution: "execution", Error: "staging unavailable"}}}
+	r.Executor = e
+	if _, err := r.backup(ctx, a, p, &e.Status); err != nil {
+		t.Fatal(err)
+	}
+	if a.Status.Failure != "" || a.Status.Backup.Phase != "Admitting" || a.Status.Backup.CaptureOperation == "capture" {
+		t.Fatal("known intact failure prevented a new capture")
+	}
+	if _, err := r.backup(ctx, a, p, &e.Status); err != nil {
+		t.Fatal(err)
+	}
+	if a.Status.Failure != "" || e.Begins != 1 {
+		t.Fatal("old intact receipt blocked native admission of the new request")
+	}
+}

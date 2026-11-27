@@ -356,7 +356,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 		condition(a, "Ready", metav1.ConditionUnknown, "ObservationUnavailable", st.Failure)
 		return r.save(ctx, a)
 	}
-	if st.Failure != "" && !ownCapture {
+	if st.Failure != "" && !ownCapture && !intactCaptureFailure(a, st) {
 		if pendingCapture {
 			return r.backupFailure(ctx, a, fmt.Errorf("native capture failure: %s", st.Failure), true)
 		}

@@ -202,7 +202,8 @@ class AdmissionTests(unittest.TestCase):
 
 class CaptureCompletionTests(unittest.TestCase):
     def test_complete_capture_respects_stop_without_poisoning_source_state(self):
-        for outcome in ('failed', 'interrupted', 'stopped', 'resumed'):
+        for outcome in ('failed', 'interrupted', 'stopped', 'resumed',
+                        'storage-failed', 'stopped-storage-failed', 'unsettled'):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
                 root = Path(directory)
                 state, staging, home = root / 'state', root / 'staging', root / 'home'
@@ -216,12 +217,13 @@ class CaptureCompletionTests(unittest.TestCase):
                 stack.enter_context(patch.object(native, 'HOME', home))
                 for name in native.OWNED_DIRECTORIES:
                     (home / name).mkdir(parents=True)
-                stack.enter_context(patch.object(native, 'assert_settled_state'))
+                stack.enter_context(patch.object(native, 'assert_settled_state',
+                    side_effect=RuntimeError('source state unresolved') if outcome == 'unsettled' else None))
                 stack.enter_context(patch.dict(os.environ, {
                     'BARTL_INSTALLATION': 'installation', 'BARTL_INSTANCE': 'records',
                 }))
                 stack.enter_context(patch.object(native, 'authority', return_value={
-                    'spec': {'running': outcome != 'stopped', 'replicas': 1}}))
+                    'spec': {'running': outcome not in ('stopped', 'stopped-storage-failed'), 'replicas': 1}}))
                 stack.enter_context(patch.object(native, 'version', return_value='3.3.1'))
                 stack.enter_context(patch.object(native, 'settled', return_value=True))
                 stack.enter_context(patch.object(native, 'native_processes', return_value={}))
@@ -233,10 +235,12 @@ class CaptureCompletionTests(unittest.TestCase):
                     'django.db': SimpleNamespace(connections=MagicMock()),
                 }))
                 def dump(*args):
+                    if outcome in ('storage-failed', 'stopped-storage-failed'):
+                        raise OSError('staging storage is read-only')
                     Path(args[-1]).write_bytes(b'complete PostgreSQL state')
                 stack.enter_context(patch.object(native, 'postgres', side_effect=dump))
                 def services(up, names):
-                    if up and outcome == 'stopped':
+                    if up and outcome in ('stopped', 'stopped-storage-failed', 'unsettled'):
                         self.fail('completed capture overrode ordinary stop')
                     if up and outcome == 'failed':
                         raise RuntimeError('native service resumption failed')
@@ -246,14 +250,23 @@ class CaptureCompletionTests(unittest.TestCase):
                 if outcome == 'interrupted':
                     with self.assertRaises(SystemExit):
                         native.capture('capture', 'execution', 1)
+                elif outcome in ('storage-failed', 'stopped-storage-failed', 'unsettled'):
+                    with self.assertRaises((OSError, RuntimeError)):
+                        native.capture('capture', 'execution', 1)
                 else:
                     native.capture('capture', 'execution', 1)
-                self.assertFalse((state / 'transition.json').exists())
+                self.assertEqual((state / 'transition.json').exists(), outcome == 'unsettled')
                 captured = native.load(state / 'capture.json')
-                self.assertEqual(captured['state'], 'Captured')
-                self.assertEqual(captured['resumed'], outcome == 'resumed')
-                native.verify_capture(captured['path'])
-                self.assertEqual(bool(captured.get('resumptionError')), outcome == 'failed')
+                if outcome in ('storage-failed', 'stopped-storage-failed', 'unsettled'):
+                    self.assertEqual(captured['state'], 'Failed')
+                    self.assertEqual(captured['sourceIntact'], outcome != 'unsettled')
+                    self.assertEqual(captured['resumed'], outcome == 'storage-failed')
+                    self.assertFalse((staging / 'captures/capture/bartl-manifest.json').exists())
+                else:
+                    self.assertEqual(captured['state'], 'Captured')
+                    self.assertEqual(captured['resumed'], outcome == 'resumed')
+                    native.verify_capture(captured['path'])
+                    self.assertEqual(bool(captured.get('resumptionError')), outcome == 'failed')
 
 
 if __name__ == '__main__':
