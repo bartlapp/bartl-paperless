@@ -925,6 +925,12 @@ spec:
                 port:
                   number: 8000
 EOF
+printf '%s\n' "$PAPERLESS_URL"
+```
+
+Continue on the reviewer client whose address is allowed above; it may differ from the cluster-administration shell. Carry the printed `PAPERLESS_URL` and the selected client CA trust to that client. It needs no cluster or provider credentials for this HTTPS check.
+
+```bash
 # Wait for Traefik to install both the route and its certificate.
 # Each read-only attempt must pass certificate and hostname verification.
 curl --fail --silent --show-error --output /dev/null --max-time 10 \
