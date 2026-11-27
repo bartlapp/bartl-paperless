@@ -152,6 +152,28 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" create secret tls "$TLS_SECRET" \
 
 This offline lookup asks for the future route's TLS binding; it does not change VALUES or apply an ingress. When the recorded deployment disables ingress, the explicit one-off render enables it solely to inspect a prospective external TLS binding. Preserve external ownership on subsequent upgrades. Disabling ingress omits access without disabling managed certificate preparation.
 
+### Diagnose delayed managed TLS
+
+If the managed-certificate wait times out, keep the selected deployment's administration context and inspect the existing issuance; do not repeat installation. After a DNS move, authoritative and public resolvers can reach the target while its cluster resolver still returns the predecessor:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get certificate,certificaterequest,order,challenge -o yaml
+PAPERLESS_HOST=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.spec.ingress.host}')
+TLS_SECRET=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o jsonpath='{.spec.ingress.tlsSecret}')
+kubectl --context "$KUBE_CONTEXT" -n "$NS" exec deployment/paperless -c paperless -- \
+  uv run --no-project python -c 'import socket,sys; print(*sorted({r[4][0] for r in socket.getaddrinfo(sys.argv[1],443)}),sep="\n")' "$PAPERLESS_HOST"
+```
+
+For an HTTP-01 self-check reporting 404, compare those resolved addresses with the target ingress already established above. If they still name the predecessor, let the previously advertised DNS TTL expire; lowering the new record's TTL does not expire existing caches. During replacement, keep the source stopped and the target isolated. cert-manager retries the same challenge automatically. If the addresses already name the target, diagnose the reported challenge error rather than assuming a cache delay.
+
+Once the diagnosed cause is resolved, repeat only the certificate wait:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait "certificate/$TLS_SECRET" --for=condition=Ready --timeout=10m
+```
+
+Then continue immediately after the failed wait in installation or reconstruction. Do not copy the predecessor's certificate, change the issuer or disable TLS verification to bypass issuance.
+
 ## Optional identity and backup
 
 ### External OIDC
@@ -458,6 +480,8 @@ fi
 curl --fail --silent --show-error --output /dev/null "$PAPERLESS_URL"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o yaml
 ```
+
+A managed-certificate timeout follows [delayed TLS diagnosis](#diagnose-delayed-managed-tls), then resumes at HTTPS verification above.
 
 Require current-generation Ready and status.version matching the intended native version. Helm only waits for controller infrastructure. Startup observes owned state; absence selects the latest complete matching point, native database/file restore and supported migration. Lookup/integrity/identity failures never mean empty state. Existing-state restart needs no backup access.
 
@@ -909,6 +933,8 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc -o json > "$INSTALL_DIR/target-pvc.json"
 ```
 
+A managed-certificate timeout follows [delayed TLS diagnosis](#diagnose-delayed-managed-tls), then resumes with the recovery-result and target-PVC records above. Keep ordinary access disabled.
+
 Inspect status.operation/status.operations and native Job results. Require the authorized repository/full snapshot, expected native version and independent PVC UIDs/backing volumes. Ready with an empty initialization is not recovery of expected history. Failure stays isolated; preserve diagnostics and use another independent empty target, never clear markers or replay an ambiguous restore.
 
 The target ingress must preserve real client addresses for the review allowlist. Base establishes this during provisioning; the administrator of an equivalent supplied cluster provides that behavior.
@@ -969,6 +995,14 @@ Continue on the reviewer client whose address is allowed above; it may differ fr
 curl --fail --silent --show-error --output /dev/null --max-time 10 \
   --retry 30 --retry-delay 2 --retry-max-time 60 --retry-all-errors "$PAPERLESS_URL"
 ```
+
+If this check fails, retain the error and inspect the address and certificate actually used by the reviewer:
+
+```bash
+curl --verbose --output /dev/null --max-time 10 "$PAPERLESS_URL"
+```
+
+Have the target administrator compare that address with the observed target ingress. The reviewer's resolver can still cache the predecessor independently of public or cluster DNS; allow the old TTL to expire before retrying the unchanged URL and CA trust. If the address is already correct, the administrator checks the target route and certificate. A default self-signed ingress certificate is not an additional trust root.
 
 Require trusted HTTPS from the reviewer address and HTTP 403 from an independent ordinary source, including a request with a forged `X-Forwarded-For` header naming the reviewer. With no `ipStrategy` configured, the allowlist uses the connection source address. Verify the deployed Middleware and other hostname routes if this fails; do not broaden the allowlist. Ordinary ingress and schedules stay disabled throughout review.
 
