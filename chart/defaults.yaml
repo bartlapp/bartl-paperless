@@ -1,5 +1,5 @@
 controller:
-  image: ghcr.io/bartlapp/bartl-paperless-controller@sha256:334c331c4f0a71ce7ed746af4be46865500f68aa46473d73e7c4cb6481d612ac
+  image: ghcr.io/bartlapp/bartl-paperless-controller@sha256:02dafa4a0112c1e235dabe350b923aded20a429659005e7464f19e19e4939392
   imagePullPolicy: IfNotPresent
 images:
   runtime330: ghcr.io/bartlapp/bartl-paperless-runtime@sha256:723da94c1a683cc9c97284fc78451385c500645c992b143092aebad3994b7d66
