@@ -55,17 +55,18 @@ class FileObservationTests(unittest.TestCase):
                         native.observe()
                     database.assert_not_called()
 
-    def test_changed_export_bytes_refuse_reconstruction(self):
+    def test_changed_native_bytes_refuse_reconstruction(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             'BARTL_INSTALLATION': 'test-installation', 'BARTL_INSTANCE': 'records',
         }):
             root = Path(directory)
-            (root / 'export').mkdir()
-            (root / 'export' / 'manifest.json').write_text('[]')
-            original = root / 'export' / 'record.pdf'
+            for name in native.OWNED_DIRECTORIES:
+                (root / 'files' / name).mkdir(parents=True)
+            (root / 'database.dump').write_bytes(b'complete PostgreSQL state')
+            original = root / 'files' / 'media' / 'record.pdf'
             original.write_bytes(b'original capture')
             native.save(root / 'bartl-manifest.json', {
-                'format': 1, 'identity': native.identity(), 'version': '3.3.1',
+                'format': 2, 'identity': native.identity(), 'version': '3.3.1',
                 'files': native.inventory(root),
             })
             native.verify_capture(root)
@@ -195,6 +196,9 @@ class CaptureCompletionTests(unittest.TestCase):
                 stack.enter_context(patch.object(native, 'STATE', state))
                 stack.enter_context(patch.object(native, 'STAGING', staging))
                 stack.enter_context(patch.object(native, 'HOME', home))
+                for name in native.OWNED_DIRECTORIES:
+                    (home / name).mkdir(parents=True)
+                stack.enter_context(patch.object(native, 'assert_settled_state'))
                 stack.enter_context(patch.dict(os.environ, {
                     'BARTL_INSTALLATION': 'installation', 'BARTL_INSTANCE': 'records',
                 }))
@@ -215,9 +219,9 @@ class CaptureCompletionTests(unittest.TestCase):
                 stack.enter_context(patch.dict(sys.modules, {
                     'django.db': SimpleNamespace(connections=MagicMock()),
                 }))
-                def export(*args):
-                    (Path(args[1]) / 'manifest.json').write_text('[]')
-                stack.enter_context(patch.object(native, 'manage', side_effect=export))
+                def dump(*args):
+                    Path(args[-1]).write_bytes(b'complete PostgreSQL state')
+                stack.enter_context(patch.object(native, 'postgres', side_effect=dump))
                 def services(up, names):
                     if up and outcome in ('stopped', 'withdrawn'):
                         self.fail('completed capture restarted a withdrawn application')

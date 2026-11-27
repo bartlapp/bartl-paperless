@@ -9,9 +9,90 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"strconv"
 	"time"
 )
+
+const cancelWithdrawalAnnotation = "paperless.bartl.sh/cancel-withdrawal"
+
+// Cancellation withdraws a completed point's finality, not an interrupted
+// capture's failure. The operator, not this package, excludes target effects.
+func (r *Reconciler) cancelWithdrawal(ctx context.Context, a *api.PaperlessApplication) (ctrl.Result, error) {
+	b := &a.Status.Backup
+	if !running(a) {
+		return r.stop(ctx, a, !a.DeletionTimestamp.IsZero())
+	}
+	if a.Status.Failure != "" || !b.Withdrawn || !b.WithdrawAfterCapture ||
+		b.CaptureOperation == "" || b.Execution == "" || b.CapturedAt == "" ||
+		b.Resumed || b.ResumptionError != "" ||
+		(b.Phase != "Captured" && b.Phase != "Publishing" && b.Phase != "Published" && b.Phase != "Failed") {
+		return r.fail(ctx, a, fmt.Errorf("withdrawal cancellation requires an intact completed final capture"))
+	}
+	op := a.Status.Operation
+	if op == nil || op.Kind != "cancel-withdrawal" {
+		if a.Annotations[cancelWithdrawalAnnotation] != b.CaptureOperation {
+			return r.save(ctx, a)
+		}
+		done, err := r.cancelActiveJobs(ctx, a)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !done {
+			return r.save(ctx, a)
+		}
+		remember(a, b.Publication)
+		b.Publication = nil
+		b.Phase = "Captured"
+		remember(a, op)
+		a.Status.Operation = newOperation(a, "cancel-withdrawal", a.Status.Version, b.CaptureOperation)
+		return r.save(ctx, a)
+	}
+	if op.Mode != b.CaptureOperation || op.Version != a.Status.Version {
+		return r.fail(ctx, a, fmt.Errorf("withdrawal cancellation admission changed"))
+	}
+	done, result, err := r.observeJob(ctx, a, op)
+	if err != nil {
+		if permanentOperation(err) {
+			return r.fail(ctx, a, err)
+		}
+		return ctrl.Result{}, err
+	}
+	if !done {
+		return r.save(ctx, a)
+	}
+	if result.ApplicationUID != string(a.UID) || result.Operation != op.ID ||
+		result.State != "WithdrawalCancelled" || result.CaptureOperation != b.CaptureOperation ||
+		result.Execution != b.Execution || result.CapturedAt != b.CapturedAt || result.Version != a.Status.Version {
+		return r.fail(ctx, a, fmt.Errorf("invalid bound withdrawal cancellation result"))
+	}
+	// Recheck intent before accepting even a previously completed native result.
+	current := &api.PaperlessApplication{}
+	if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(a), current); err != nil {
+		return ctrl.Result{}, err
+	}
+	if current.UID != a.UID || !running(current) {
+		return ctrl.Result{Requeue: true}, nil
+	}
+	remember(a, op)
+	a.Status.Operation = nil
+	b.Withdrawn = false
+	b.WithdrawAfterCapture = false
+	b.Phase = "Cancelled"
+	b.Error = ""
+	// An unpublished old final capture must never be retried after source work.
+	// Its immutable bytes remain retained, but it is no longer publication input.
+	b.CapturedAt = ""
+	b.Publication = nil
+	b.LastManualRequest = a.Annotations["paperless.bartl.sh/backup-request"]
+	now := metav1.NewTime(time.Now())
+	b.ScheduleBaseline = &now
+	b.LastScheduleTime = nil
+	a.Status.State = "Starting"
+	condition(a, "Ready", metav1.ConditionFalse, "WithdrawalCancelled", "Final withdrawal cancelled; restarting intact source")
+	condition(a, "BackupFailed", metav1.ConditionFalse, "WithdrawalCancelled", "Cancelled final capture will not be republished")
+	return r.save(ctx, a)
+}
 
 func captureDeadline(a *api.PaperlessApplication) error {
 	admitted, err := time.Parse(time.RFC3339Nano, a.Status.Backup.AdmittedAt)

@@ -10,13 +10,13 @@ New deployment: follow the steps below. Existing deployment: [resume access](#re
 
 ## Package and target
 
-Candidate **0.3.0-dev.5** targets Paperless 3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1 through API `paperless.bartl.sh/v1alpha2`. Updates replace the installation on independent storage; in-place package/native upgrades and predecessor Kubernetes-resource adoption are not supported. Format-1 package backups from Paperless **3.3.0 and 3.3.1** are supported inputs. The target automatically imports with the matching immutable runtime, then performs the native 3.3.0 → 3.3.1 transition when necessary. Both runtime digests ship in the selected chart. This transition updates the Tantivy search schema from 3 to 4; it is not a new Django database migration. Other source versions and downgrades are refused.
+Candidate **0.3.0-dev.7** targets Paperless 3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1 through API `paperless.bartl.sh/v1alpha2`. Updates replace the installation on independent storage; in-place package/native upgrades and predecessor Kubernetes-resource adoption are not supported. Format-2 complete database/file backups from Paperless **3.3.0 and 3.3.1** are supported inputs. The target automatically restores with the matching immutable runtime, then performs the native 3.3.0 → 3.3.1 transition when necessary. Both runtime digests ship in the selected chart. This transition updates the Tantivy search schema from 3 to 4; it is not a new Django database migration. Other source versions, downgrades and format-1 document exports are refused. Format-1 exports omit workflow execution history and cannot provide complete application-state recovery; historical candidates and evidence remain separate.
 
 Use the [operator tools](https://github.com/bartlapp/bartl-app/blob/main/docs/operator-workstation.md#check-the-workstation) and a Linux amd64 single-node K3s profile with enforced NetworkPolicy, Traefik in kube-system and four ReadWriteOnce claims. Storage must support POSIX permissions, locks, atomic rename and fsync. Native setup needs root; ordinary services use UID 1000. One namespace holds one release named paperless and no unrelated workloads. The supported profile has one container, one Celery worker/thread and local-path storage, not HA or multi-node RWO placement. [Base](https://github.com/bartlapp/base-k3s/blob/main/README.md) supplies this profile.
 
 Supply its existing version-1 installation record, complete cluster/resource references and retained access. Default HTTPS uses cert-manager and public ports 80/443; external TLS is supported. API/browser intake and native metadata-assignment workflows are covered. Mail polling, remote OCR/AI, custom scripts and external-effect workflows need separate qualification. Do not override DJANGO_SETTINGS_MODULE or the controller-owned database/broker/concurrency topology.
 
-Before relying on the service, agree interruption/data loss, source retirement, backup protection/retention, staging headroom and alert ownership. Captures interrupt intake and retain complete exports without automatic pruning. Name the records-review owner and independently surviving evidence of later deletion/hold/access decisions. Export truncates version added timestamps from microseconds to milliseconds; decide whether that fidelity is sufficient. Paperless-local MFA is not qualified; configured provider TOTP needs its own fresh-login check.
+Before relying on the service, agree interruption/data loss, source retirement, backup protection/retention, staging headroom and alert ownership. Captures interrupt intake and retain complete database/file points without automatic pruning. Name the records-review owner and independently surviving evidence of later deletion/hold/access decisions. Complete database capture preserves native timestamp precision and security state at the selected point, not subsequent changes. Paperless-local MFA is not qualified; configured provider TOTP needs its own fresh-login check.
 
 ## Select cluster access and obtain the release
 
@@ -34,7 +34,7 @@ umask 077
 kubectl --context "$KUBE_CONTEXT" get nodes,storageclass
 mkdir -p "$WORK_DIR/packages"
 CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-export PACKAGE_VERSION=0.3.0-dev.5
+export PACKAGE_VERSION=0.3.0-dev.7
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$PACKAGE_VERSION" --untar --untardir "$CHART_STAGE"
 export PACKAGE_VERSION
 PACKAGE_VERSION=$(helm show chart "$CHART_STAGE/bartl-paperless" | yq -er '.version')
@@ -101,7 +101,7 @@ kubectl --context "$KUBE_CONTEXT" create namespace "$NS"
 
 Never inherit another target's kubeconfig. Declarations report public endpoints, credential bindings, optional OIDC/backup requests and claims; they neither issue credentials nor create dependencies.
 
-Create the four declared claims. Adjust the capacities once before this block; staging must hold retained exports and failed-publication headroom, not merely one export:
+Create the four declared claims. Adjust the capacities once before this block; staging must hold retained database/file captures and failed-publication headroom, not merely one point:
 
 ```bash
 for entry in storage:10Gi database:5Gi broker:1Gi staging:20Gi; do
@@ -399,7 +399,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" create secret generic "$BOOTSTRAP_SEC
   --from-file=PAPERLESS_ADMIN_PASSWORD="$INSTALL_DIR/protected/bootstrap-password"
 ```
 
-Keep protected files mode 0600, outside Git and independently available. The bootstrap account applies only to an empty installation, never imported state. Do not add controller-owned topology or custom-init/consume scripts to the configuration Secret. Import restores Paperless accounts, not the identity provider; retain that provider and client independently.
+Keep protected files mode 0600, outside Git and independently available. The bootstrap account applies only to an empty installation, never restored state. Do not add controller-owned topology or custom-init/consume scripts to the configuration Secret. Reconstruction restores Paperless accounts, not the identity provider; retain that provider and client independently.
 
 Protected custody follows scope: `protected/secret-key`, `protected/oidc-client-secret` and `repository/{reader,writer}` identify the logical application and survive replacement. `protected/database-password`, bootstrap inputs and externally supplied `tls/` files serve the selected deployment; restore the required original inputs during recovery rather than running fresh generation. `protected/environment.json` is regenerated from those inputs. Keycloak administrator files are preparation-only, never application runtime credentials.
 
@@ -457,7 +457,7 @@ curl --fail --silent --show-error --output /dev/null "$PAPERLESS_URL"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o yaml
 ```
 
-Require current-generation Ready and status.version matching the intended native version. Helm only waits for controller infrastructure. Startup observes owned state; absence selects the latest complete matching point, same-version import and supported migration. Lookup/integrity/identity failures never mean empty state. Existing-state restart needs no backup access.
+Require current-generation Ready and status.version matching the intended native version. Helm only waits for controller infrastructure. Startup observes owned state; absence selects the latest complete matching point, native database/file restore and supported migration. Lookup/integrity/identity failures never mean empty state. Existing-state restart needs no backup access.
 
 ### Create an administrator without bootstrap
 
@@ -468,7 +468,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" exec -it deployment/paperless -c pape
   uv run --no-project python manage.py createsuperuser
 ```
 
-Retain the selected administrator credentials through the installation's protected channel. This is not a recovery/reset step; imported accounts already exist.
+Retain the selected administrator credentials through the installation's protected channel. This is not a recovery/reset step; restored accounts already exist.
 
 ### Verify useful behavior
 
@@ -528,7 +528,7 @@ Continue with the selected operation.
 
 ## Capture, publication and retry
 
-Load [retained context](#load-retained-context) only; no chart preparation is needed. Start from a running application with backup already configured and sufficient staging. Do not stop Paperless first: capture needs its current writer execution. Let the controller drain intake/processing and stop writers around export:
+Load [retained context](#load-retained-context) only; no chart preparation is needed. Start from a running application with backup already configured and sufficient staging. Do not stop Paperless first: capture needs its current writer execution. Let the controller drain intake/processing and stop writers throughout database and file capture:
 
 ```bash
 REQUEST="manual-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -630,7 +630,7 @@ Before interrupting a reachable source, acquire the selected replacement package
 export TARGET_PACKAGE=paperless-replacement
 mkdir -p "$WORK_DIR/packages"
 TARGET_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-export TARGET_PACKAGE_VERSION=0.3.0-dev.5
+export TARGET_PACKAGE_VERSION=0.3.0-dev.7
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$TARGET_PACKAGE_VERSION" --untar --untardir "$TARGET_STAGE"
 export TARGET_PACKAGE_VERSION
 TARGET_PACKAGE_VERSION=$(helm show chart "$TARGET_STAGE/bartl-paperless" | yq -er '.version')
@@ -640,9 +640,9 @@ MATCHING_PACKAGE=$(yq -o=json '.packages // {}' "$VALUES" |
 if [ -n "$MATCHING_PACKAGE" ]; then TARGET_PACKAGE="$MATCHING_PACKAGE"; fi
 ```
 
-### Final capture and source retirement
+### Final capture and source withdrawal
 
-This final-capture operation is supplied by 0.3.0-dev.5. For an earlier source, use its retained release's capture and retirement procedures and complete its writer withdrawal before target preparation; do not send an unsupported annotation or apply this controller in place. Supported backup/data versions do not certify an older package's production-withdrawal behavior.
+Use this procedure with the selected format-2 package. It keeps the intact source withdrawn while the operator prepares and reviews the independent target. Ordinary stop/start does not cancel final withdrawal. Historical export-only packages are not supported sources for this complete-state reconstruction path.
 
 For a reachable source, load its retained context and [prepare the chart-backed operation](#prepare-a-chart-backed-operation), then withdraw all intake paths and prevent concurrent publication/configuration changes. Keep its writer execution running for final capture. Disable public ingress and schedules, then capture:
 
@@ -665,7 +665,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
     any(.status.conditions[]; .type == "Ready" and .status == "True" and .observedGeneration == $g)'
 ```
 
-Let already admitted capture/publication finish. The final request below settles work and captures it **without resuming native writers**, including scheduler/consumer/worker activity. The controller removes the idle application Pod and publishes the protected export with database/broker still available. An older retained ordinary capture may be published first; its receipt lacks `withdrawn: true`. In that case keep intake closed and repeat this request block once to create the final withdrawn point. Retrying publication of an already withdrawn point is valid: no new source work has been admitted since that capture.
+Let already admitted capture/publication finish. The final request below settles work and captures it **without resuming native writers**, including scheduler/consumer/worker activity. The controller removes the idle application Pod and publishes the protected point with database/broker still available. An older retained ordinary capture may be published first; its receipt lacks `withdrawn: true`. In that case keep intake closed and repeat this request block once to create the final withdrawn point. Retrying publication of an already withdrawn point is valid: no new source work has been admitted since that capture.
 
 If the publication acknowledgement or shell session is lost, repeat the same final-request block. An already-published withdrawn source acknowledges its retained point without creating another capture or admitting writers; capture and publication timestamps remain unchanged.
 
@@ -685,9 +685,9 @@ jq -e --arg request "$REQUEST" '.status.backup |
   (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/backup-result.json"
 ```
 
-`WritesWithdrawn` is not Ready and is not whole-application Stopped. Normal backup publication failure permits healthy resumption; this explicitly withdrawn source must remain closed even if publication fails. Correct publication access and repeat the request to publish the retained point. Final withdrawal survives controller/component restart and is a retirement operation, not an ordinary reversible stop: do not clear its native marker or reuse its storage as a replacement. Interrupted or uncertain native capture remains failed; only a completely published point is eligible for reconstruction.
+`WritesWithdrawn` is not Ready and is not whole-application Stopped. Normal backup publication failure permits healthy resumption; this explicitly withdrawn source remains closed even if publication fails. Correct publication access and repeat the request to publish the retained point. Final withdrawal survives controller/component restart. Keep the source installation and its claims intact until the switch is accepted or explicitly cancelled; do not delete native markers, adopt old storage or uninstall it merely to keep writers closed. Interrupted or uncertain native capture remains failed; only a completely published point is eligible for reconstruction.
 
-Require final capture inclusion and any required secondary protection. Then stop the source and prevent restart:
+Require final capture inclusion and any required secondary protection. Then stop the source, retaining its controller and application resource:
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" patch paperlessapplication/paperless \
@@ -700,23 +700,41 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs,deployments,replicasets
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc -o json > "$SOURCE_DIR/source-pvc.json"
 ```
 
-Retire the stopped source controller and execution resources while retaining its claims and protected inputs. Before doing so, retain required diagnostics and the final backup receipt:
+Require no source application, database, broker or native-Job Pods, including terminating Pods. The retained native withdrawal gate prevents writer admission even if ordinary start is requested or a component/controller restarts. Direct and stale-address requests must fail before target activation. For an unavailable source, enforce withdrawal independently before activation; DNS or unreachability is insufficient.
+
+For a lost source, select `SOURCE_DEPLOYMENT` and the independently recovered `SOURCE_DIR` without contacting it. Retain the original `backup.schedule` in `"$SOURCE_DIR/backup-schedule-before-operation"`; do not overwrite an existing interrupted operation's saved value with the temporarily empty schedule.
+
+### Cancel a switch before production activation
+
+Cancellation is an explicit operator decision, never automatic fallback. First establish that the target has not accepted production work or caused production effects and cannot do so while the source resumes. Stop any prepared target through its whole-application stop procedure and confirm termination. If production effects may have occurred, do not use this cancellation procedure; keep the source withdrawn and reconcile authority and data before deciding how to recover. The package does not inspect another installation.
+
+Load the intact source's retained context. Its completed withdrawal remains closed while restoring ordinary run intent. Bind cancellation to that source's current capture:
 
 ```bash
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json \
-  > "$SOURCE_DIR/retired-application.json"
-kubectl --context "$KUBE_CONTEXT" -n "$NS" delete paperlessapplication/paperless --wait=true --timeout=10m
-helm uninstall "$RELEASE" --kube-context "$KUBE_CONTEXT" -n "$NS" --cascade=foreground --wait --timeout=5m
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,deployments,jobs,ingresses
+CAPTURE=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless \
+  -o jsonpath='{.status.backup.captureOperation}')
+test -n "$CAPTURE"
+kubectl --context "$KUBE_CONTEXT" -n "$NS" patch paperlessapplication/paperless \
+  --type=merge -p '{"spec":{"running":true,"replicas":1}}'
+kubectl --context "$KUBE_CONTEXT" -n "$NS" annotate paperlessapplication/paperless \
+  "paperless.bartl.sh/cancel-withdrawal=$CAPTURE" --overwrite
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
+  --for=condition=Ready --timeout=10m
 ```
 
-Require no source execution or route. A returning source host must still have these resources absent; do not replay its installation manifests or restore a pre-retirement cluster snapshot. Direct and stale-address requests must fail before target activation. For an unavailable source, enforce withdrawal outside that source before activation. This profile covers planned retirement and reconstruction from independently preserved inputs, not successful activation through an uncooperative lost provider.
+Verify native health and the intact library before deliberately restoring source routing and its retained schedule through the static-configuration procedure. Cancellation does not enable ingress or select the production route. It neither repairs incomplete captures nor automatically retries interrupted native mutations. The old final point remains retained, but is not republished as a current final capture after source work resumes. A later switch requires a new final capture.
 
-Confirm all application/native workers gone and retirement enforced; preserve source data. For a lost/already retired source, skip these source calls and select `SOURCE_DEPLOYMENT` and the independently recovered `SOURCE_DIR`. Before target preparation, retain the source instance's original `backup.schedule` in `"$SOURCE_DIR/backup-schedule-before-operation"` with the same save-if-absent block above. An existing file belongs to the interrupted operation and must not be overwritten by the temporarily empty setting. Enforce retirement independently before target access.
+After confirming that the source's intended route and saved schedule are restored, remove this operation's temporary schedule input so a later switch records the then-current schedule:
+
+```bash
+rm "$INSTALL_DIR/backup-schedule-before-operation"
+```
+
+
 
 ### Prepare the independent target
 
-Choose a fresh deployment/namespace and existing compatible target cluster. Preserve logical identity and static service settings. The selected destination package determines the native target and performs every required import/migration step. Never copy source runtime intent, CR status, ownership annotations or controller operation records. A v1alpha1 predecessor requires a new target cluster; v1alpha2 blue/green namespaces may coexist only with compatible cluster-wide APIs.
+Choose a fresh deployment/namespace and existing compatible target cluster. Preserve logical identity and static service settings. The selected destination package determines the native target and performs every required restore/migration step. Never copy source runtime intent, CR status, ownership annotations or controller operation records. Blue/green namespaces may coexist only with compatible cluster-wide APIs; an incompatible API requires an independent target cluster.
 
 ```bash
 {
@@ -833,7 +851,7 @@ jq -n --arg name "$CONFIG_SECRET" --arg namespace "$NS" \
   }' | kubectl --context "$KUBE_CONTEXT" apply --server-side --field-manager=paperless-preparation -f -
 ```
 
-Do not create a new bootstrap identity for imported state. For external TLS only, supply its target certificate/key and retain tls.managed: false:
+Do not create a new bootstrap identity for restored state. For external TLS only, supply its target certificate/key and retain tls.managed: false:
 
 ```bash
 TLS_SECRET=$(helm template "$RELEASE" "$CHART" -n "$NS" -f "$VALUES" \
@@ -859,7 +877,7 @@ dig @8.8.8.8 +short "$PAPERLESS_HOST" A
 
 ### Reconstruct, review and activate
 
-The source is retired. Run the one-time application-creation block in [Install and verify](#install-and-verify) using this target's context and explicit new runtime intent; then install with target routing still disabled:
+The source is write-withdrawn and stopped, or independently prevented from serving and causing production effects. Run the one-time application-creation block in [Install and verify](#install-and-verify) using this target's context and explicit new runtime intent; then install with target routing still disabled:
 
 ```bash
 helm install "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" -f "$VALUES" \
@@ -876,11 +894,11 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc -o json > "$INSTALL_DIR/target-pvc.json"
 ```
 
-Inspect status.operation/status.operations and native Job results. Require the authorized repository/full snapshot, expected native version and independent PVC UIDs/backing volumes. Ready with an empty initialization is not recovery of expected history. Failure stays isolated; preserve diagnostics and use another independent empty target, never clear markers or replay an ambiguous import.
+Inspect status.operation/status.operations and native Job results. Require the authorized repository/full snapshot, expected native version and independent PVC UIDs/backing volumes. Ready with an empty initialization is not recovery of expected history. Failure stays isolated; preserve diagnostics and use another independent empty target, never clear markers or replay an ambiguous restore.
 
 The target ingress must preserve real client addresses for the review allowlist. Base establishes this during provisioning; the administrator of an equivalent supplied cluster provides that behavior.
 
-Confirm source retirement and no ordinary route for this hostname. Create a separate, operator-owned review Ingress and namespace-local allowlist. Do not edit the controller-owned `paperless` Ingress; it must remain absent. The offline lookup below obtains TLS/class settings without enabling a route:
+Confirm source withdrawal and no ordinary route for this hostname. Create a separate, operator-owned review Ingress and namespace-local allowlist. Do not edit the controller-owned `paperless` Ingress; it must remain absent. The offline lookup below obtains TLS/class settings without enabling a route:
 
 ```bash
 export REVIEW_CIDR=203.0.113.10/32  # Replace with the authorized reviewer's actual source CIDR.
@@ -939,7 +957,7 @@ curl --fail --silent --show-error --output /dev/null --max-time 10 \
 
 Require trusted HTTPS from the reviewer address and HTTP 403 from an independent ordinary source, including a request with a forged `X-Forwarded-For` header naming the reviewer. With no `ipStrategy` configured, the allowlist uses the connection source address. Verify the deployed Middleware and other hostname routes if this fails; do not broaden the allowlist. Ordinary ingress and schedules stay disabled throughout review.
 
-From the allowed address, verify the selected point's expected documents, metadata, grants and the installation's agreed search/workflow behavior. Verify fresh local or selected OIDC login; reacquire API tokens only for consumers that need them through [token recovery](#oidc-mfa-and-token-recovery), without resetting users or assigning an SSO-only user a local password. Complete the [records review](#records-after-restore) before affected use resumes. Ingest a permitted test document, verify processing/search/download and publish another usable recovery point:
+From the allowed address, verify the selected point's expected documents, metadata, grants and the installation's agreed search/workflow behavior. Verify fresh local or selected OIDC login and retained API credentials; [token recovery](#oidc-mfa-and-token-recovery) is available if a consumer needs its existing credential delivered again. Complete the [records review](#records-after-restore) before affected use resumes. Ingest a permitted test document, verify processing/search/download and publish another usable recovery point. Review work must remain isolated from production effects; acceptance work does not authorize concurrent production:
 
 ```bash
 REQUEST="manual-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -976,7 +994,9 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
 
 Verify ordinary access and the restored schedule before removing `"$SOURCE_DIR/backup-schedule-before-operation"`. Keep that temporary input independently available while recovery is unfinished; in another shell select the same source-input directory before activation.
 
-If activation is interrupted or its acknowledgement is lost, observe both route objects and the selected deployment before retrying. With source resources retired, only the target may serve: the review route alone permits review, the ordinary target ingress permits production, and neither means an outage. Do not infer the active generation from DNS or an earlier command exit. Verify the target's current application UID, PVC identities and a useful document request at the production address, then retain that deployment as active. If it may have accepted work, never reactivate the source automatically.
+If activation is interrupted or its acknowledgement is lost, observe both route objects and the selected deployment before retrying. Confirm that source withdrawal remains enforced. Only the target may serve: the review route alone permits review, the ordinary target ingress permits production, and neither means an outage. Do not infer the active generation from DNS or an earlier command exit. Verify the target's current application UID, PVC identities and a useful document request at the production address, then retain that deployment as active. If it may have accepted production work or caused production effects, do not cancel source withdrawal.
+
+After accepted production activation, retain source diagnostics and the final point, then load the source context and follow [Remove the release](#remove-the-release). This is final disposal, not a prerequisite for target preparation or a cancellation mechanism. Retain or dispose of source PVCs and protected inputs only under the installation's data-retention decision.
 
 
 ## Remove the release
@@ -1001,7 +1021,7 @@ Use the package configuration rendering and provider preparation above; do not h
 
 A read-only browser group needs `view_document`, `view_uisettings`, `add_uisettings`, `change_uisettings` and `view_savedview`, in addition to its document object grants. Native metadata views may also need `view_tag`, `view_correspondent`, `view_documenttype` and `view_storagepath`. UI-settings permissions do not grant document modification or user administration.
 
-Native import excludes DRF API tokens. Local password accounts can reacquire their token with `POST /api/token/`; Paperless-local MFA, when enabled, additionally requires its native `code`. For a restored SSO-only user, an authorized operator uses the native management command:
+Complete database restore retains DRF API tokens and Django sessions at the selected point. Token reacquisition is not a restore prerequisite. Native session expiry and the independently retained Paperless key still apply. A token revoked or rotated after that point may become valid again after recovery; reconcile subsequent security changes before production access. If a local password account needs its existing token delivered again, use `POST /api/token/`; Paperless-local MFA, when enabled, additionally requires its native `code`. For an SSO-only user, an authorized operator can use the native management command:
 
 ```sh
 # Treat stdout as a secret; do not put it in general logs.
@@ -1013,19 +1033,19 @@ Omit `--reset`/`-r`: default `get_or_create` returns an existing token without r
 
 ## State boundary
 
-The consistent point is one native export plus its format-1 inventory, hashes, logical identity and source version, published under one complete Restic snapshot. PostgreSQL and document files must agree. The exporter transaction and media lock alone do not exclude every writer: capture closes intake, stops scheduler/consumer, settles worker queues, ends writer descendants and waits for database sessions before exporting.
+The consistent point is one native PostgreSQL custom-format dump plus owned application files, format-2 inventory, hashes, logical identity and source version, published under one complete Restic snapshot. Database and files are captured while all native writers remain stopped: capture closes intake, stops scheduler/consumer, settles worker queues, ends writer descendants and waits for database sessions. A complete dump alone is not a consistent application point. Residual pending/started intake or scratch inputs prevent successful capture; queues are never purged to manufacture success.
 
 | Mutable state | Capture and reconstruction boundary |
 | --- | --- |
-| PostgreSQL metadata, document versions/relationships, users/passwords/groups/grants, workflows, settings, social identity and MFA authenticators | Native export/import; audit entries only when audit logging is enabled. Preserve logical installation/instance identity. |
-| Originals, version files, archive renditions, thumbnails and share-link bundles | Exported with metadata; sizes and SHA-256 hashes verified before import. Do not suppress renditions. |
-| Consume directory and Redis queued/unacknowledged work | Owned persistent pending work, not disposable source data. Capture requires settled work and never purges queues. Reconstruction starts with empty target consume/Redis because the point contains completed work. Retain intake sources until protected capture. |
-| Search index and derived classifier data | Rebuilt through native import/startup. Import 3.3.0 with its matching runtime, then complete native schema 3 → 4 reindex before target completion. |
-| DRF API tokens and Django browser sessions | Not exported. Users log in again; required API consumers reacquire tokens through native administration without resetting imported identities. |
+| PostgreSQL metadata, document versions/relationships, users/passwords/groups/grants, workflow definitions and execution history, task outcomes, settings, social identity and MFA authenticators | Native `pg_dump`/`pg_restore`, then automatic native migrations. All application tables and native timestamp precision are retained. Audit history includes what the source actually recorded; capture does not create missing history. |
+| Originals, version files, archive renditions, thumbnails and share-link bundles | Owned media copied under the same stopped-writer boundary; inventory sizes and SHA-256 hashes verified before reconstruction. |
+| Consume directory, API/browser scratch inputs and Redis queued/unacknowledged work | Pending inputs persist on owned storage. `PAPERLESS_SCRATCH_DIR` selects `/usr/src/paperless/data/scratch`; native initialization sets permissions and native processing cleans completed inputs. Capture requires settled work and refuses unresolved inputs. A successful point contains completed work; reconstruction uses empty target Redis, not replay of predecessor queues. |
+| Search index and derived classifier data | Owned data retained; native migration/reindex completes before target admission. A 3.3.0 point is restored with its matching runtime, then the 3.3.1 native schema 3 → 4 reindex runs automatically. |
+| DRF API tokens and Django browser sessions | Retained in the database, subject to native expiry and the original Paperless key. Later revocations, rotations, logout and permission changes require recovery review. |
 | Paperless secret key, configuration, TLS, selected OIDC inputs, backup credentials/encryption key | Independently retained inputs, not available solely inside the encrypted point. External services retain their own authority. |
-| Capture staging and local binding/transition records | Target-local coordination and publication retry. Paired database/file bindings include the current application UID; a new application cannot adopt an older target's binding. Replacement imports only the native export, never predecessor operation records, runtime intent or Kubernetes ownership. |
+| Capture staging and local binding/transition records | Target-local coordination and publication retry, excluded from reconstructed application state. The package's `bartl_binding` table is excluded from the dump; the target creates its own database/file binding. Replacement never copies predecessor operation records, runtime intent or Kubernetes ownership. |
 
-The profile covers API/browser intake and metadata-assignment workflows. Mail polling, remote OCR/AI, custom scripts, external-effect workflows, shared databases/brokers and optional DB read caching are not implicitly qualified. PostgreSQL and Redis are dedicated owned components. Export timestamp precision and post-backup records decisions remain explicit recovery limits.
+The profile covers API/browser intake and metadata-assignment workflows. Mail polling, remote OCR/AI, custom scripts, external-effect workflows, shared databases/brokers and optional DB read caching are not implicitly qualified. PostgreSQL and Redis are dedicated owned components. Full database preservation removes export-specific token/session omissions and timestamp truncation; it does not recover changes after the selected point or establish Paperless-local MFA qualification.
 
 ## Source retention
 
@@ -1037,7 +1057,7 @@ After recovery, compare retained sources with the restored library before re-ing
 
 ## Records after restore
 
-An export reflects records at capture, not later deletion, hold or restriction decisions. Its restored audit history cannot supply missing later changes. After technical recovery in isolation, the responsible person checks independently surviving approvals, disposal records, correspondence or newer evidence and applies corrections through native administration before affected use resumes. This is a records-policy review, not a second technical startup authorization; it applies neither to ordinary restart nor nightly capture.
+A recovery point reflects records and security state at capture, not later deletion, hold, restriction, token revocation or identity changes. Its restored audit history cannot supply missing later changes. After technical recovery in isolation, the responsible person checks independently surviving approvals, disposal records, correspondence or newer evidence and applies corrections through native administration before affected use resumes. This is a records-policy review, not a second technical startup authorization; it applies neither to ordinary restart nor nightly capture.
 
 Where evidence is insufficient, keep affected access/processing closed and resolve the exception with the installation's named records owner. Review cannot reconstruct missing information. Use the independently surviving decision evidence and review responsibilities recorded in the [installation inputs](https://github.com/bartlapp/bartl-app/blob/main/docs/how-to-bartlize.md#installation-inputs); retain the review result and unresolved restrictions there, with protected evidence referenced as appropriate. Existing approvals, disposal records and correspondence may suffice; a new decision file is justified only by a demonstrated gap.
 
@@ -1048,7 +1068,7 @@ The selected archive ships the service interface and static defaults. Inputs und
 
 Connection rendering exposes HTTPS, OIDC/backup requests, credential bindings and storage claims. Configuration rendering exposes the configuration Secret environment. Protected values are added locally, never to VALUES. Refresh derived bindings after inputs change. Deployment selection validates namespace, Helm release and package version; its sole operational override is static `ingressEnabled`. Runtime intent has no installation-values copy.
 
-Exact-artifact qualification belongs in the existing release record. Earlier candidate results do not qualify changed paths in 0.3.0-dev.5. Standalone acceptance remains separate from later coordinated multi-application qualification.
+Exact-artifact qualification belongs in the existing release record. Earlier candidate results do not qualify changed paths in 0.3.0-dev.7; dev.6's active-ingestion capture failure remains attached to that candidate. Standalone acceptance remains separate from later coordinated multi-application qualification.
 
 ## Maintainer procedures and evidence
 
@@ -1064,6 +1084,26 @@ The client-CA regression uses an ephemeral local HTTPS server to check native Re
 
 
 Qualify exact artifacts through every applicable [contract case](https://github.com/bartlapp/bartl-app/blob/main/docs/application-contract.md#supported-configuration-and-catalogue-evidence): both initialization branches, restart without backup access, durable intent under static changes/controller restart, independent component restart, whole stop, consistent capture, independent reconstruction, new work and reconstruction of its next point, native search-schema transition, observation/lookup/integrity/native failures, publication retry, conflicting/stale work, persistent interrupted-transition isolation and independent-target retry. Exercise foreign-state protection and operator authority transfer, stale access, returning-source behavior and interrupted activation. Verify original/version/rendition bytes, metadata, grants, workflows and search, not merely Ready or login. Qualify selected OIDC/MFA where used; local authentication needs no Keycloak.
+
+For the workflow-history regression, ingest a synthetic document titled `Synthetic workflow history`. From the package checkout run preparation against the source, then capture and reconstruct through the package. Run verification against the reconstructed target without changing its workflow history:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" -n "$NS" exec -i deployment/paperless -- \
+  env WORKFLOW_CHECK=prepare uv run --no-project python manage.py shell < tests/workflow-history.py
+# After package reconstruction, select the target's retained context.
+kubectl --context "$KUBE_CONTEXT" -n "$NS" exec -i deployment/paperless -- \
+  env WORKFLOW_CHECK=verify uv run --no-project python manage.py shell < tests/workflow-history.py
+```
+
+For pending uploads, occupy the native worker with known bounded work, accept additional API/browser inputs and retain each returned task ID and original file. Supply `url`, `tokenFile` and `uploads` in a protected JSON file; each upload identifies `task`, `originalFile`, synthetic `title`, expected `owner` and `tags`. Establish that these tasks are pending before interruption, then verify task success, original bytes and metadata after each independent application restart, scale-to-zero cycle and whole stop/start:
+
+```bash
+node tests/pending-uploads.mjs pending /protected/pending-inputs.json
+# Perform the selected native lifecycle operation.
+node tests/pending-uploads.mjs verify /protected/pending-inputs.json
+```
+
+Use the supplied CA bundle through `NODE_EXTRA_CA_CERTS` when needed. The verifier waits up to 3,900 seconds by default, allowing native Redis redelivery after an interrupted worker; it neither shortens native visibility timeouts nor republishes tasks. Retain task, broker and scratch diagnostics when work is interrupted. Also initiate capture during known active/pending ingestion: require either completed consistent work or visible refusal with inputs retained. Verify final withdrawal through component/controller restart, explicitly permitted cancellation without state repair, and a new usable capture after resumed work.
 
 For the repeatable fixture, start with an empty disposable library and a provisioned non-administrator native user (local or selected OIDC). The preparer creates a reader group, a denied user without document grants, a document-added assignment workflow and a synthetic root with a second file version. It retains originals and native archive PDF renditions separately; it does not alter startup or capture.
 
@@ -1108,7 +1148,7 @@ done
 rm "$LIBRARY_WORK/token"
 ```
 
-Use the generated `library/library-inputs.json` for the checker below. Baseline it once after preparation; do not regenerate its expected state merely to pass a transition. After reconstruction, reissue these native tokens against the selected target because native import excludes them. Keep the original fixture files and expected state for comparison. New work belongs to a subsequent explicitly selected baseline and recovery point.
+Use the generated `library/library-inputs.json` for the checker below. Baseline it once after preparation; do not regenerate its expected state merely to pass a transition. After reconstruction, verify using the retained tokens rather than rotating or reissuing them. Keep the original fixture files and expected state for comparison. New work belongs to a subsequent explicitly selected baseline and recovery point.
 
 Synthetic-library checks use:
 
@@ -1119,13 +1159,13 @@ node tests/check-library.mjs verify /protected/library-inputs.json
 
 Only synthetic documents with titles beginning `Synthetic ` are allowed. Inputs contain `url`, `tokensFile` (admin/reader/denied test-role tokens), `expectedFile`, `fixturesDir`, `files` (route/file with optional actor/deniedActors), `searches` (query/ids with optional actor) and `readOnlyDocument`. Include required versions/renditions. Baseline precedes capture; verify follows each transition with recovered credentials. Keep inputs, tokens, expected state and raw output outside Git; retain exact artifacts, concise results and material limits in the existing release/integration record.
 
-Historical 0.1.0 runtime tests on 25 October 2026 restored after source-VM deletion, covering originals/versions, relationships, metadata, permissions, token reacquisition, search and another backup restored into fresh database/file/Redis storage. The export's millisecond version-added timestamp precision remains a fidelity limit. Other package fault scenarios removed source installations/storage and primary repositories on one disposable K3s host; they do not establish host/provider-loss failover or cross-cluster fencing. The target was Debian 13 amd64, K3s v1.36.5+k3s1, cert-manager 1.21.3 and Helm 4.3.0; Podman 5.4.2 built images.
+Historical 0.1.0 runtime tests on 25 October 2026 restored after source-VM deletion, covering originals/versions, relationships, metadata, permissions, token reacquisition, search and another backup restored into fresh database/file/Redis storage. That export-only candidate had millisecond version-added timestamp precision; it does not qualify format-2 fidelity. Other historical package fault scenarios removed source installations/storage and primary repositories on one disposable K3s host; they do not establish host/provider-loss failover or cross-cluster fencing. The target was Debian 13 amd64, K3s v1.36.5+k3s1, cert-manager 1.21.3 and Helm 4.3.0; Podman 5.4.2 built images.
 
 Historical 0.1.0 chart archive SHA-256: `dc87e82d5350a4f31850ef801521f836e4567e8ecf81e3a7e319e7935e48dfa8`; OCI manifest: `ef2bf48e83bb7b919d85d36d18ad6191373e401c74f03c402e88c749d1601c0d`. These identify historical evidence, not a supported flat-values adoption path.
 
 Native observations on 24 October showed queued work surviving tested replacements, but interrupted active work did not settle within the observation window and revocation did not survive worker replacement. Warm shutdown did not independently prove writer/descendant termination. These findings justify settled-work capture, not replay/reconciliation. The experimental supervisor/scripts/chart/reconciliation code retired in `82e4357` is not the current design.
 
-The controller binds native work to application/operation, Pod UID, container ID and execution UUID. Target-local locking, database/file binding and pending-transition markers exclude concurrent or ambiguous import/capture. The s6 prerequisite runs before migrations/init-complete; upstream custom-init alone logs errors and continues. Capture ends writer descendants and database sessions, preserves media-lock ownership and records same-execution resumption. Request-bound final withdrawal instead keeps the native gate closed and retires application execution before publication. This automates the required source-background withdrawal; it closes the gap where an ordinary capture could resume scheduled production work before operator stop. Publication retries read the retained export without recreating source writers. Target import never copies this source-local authority or operation state.
+The controller binds native work to application/operation, Pod UID, container ID and execution UUID. Target-local locking, database/file binding and pending-transition markers exclude concurrent or ambiguous restore/capture. The s6 prerequisite runs before migrations/init-complete; upstream custom-init alone logs errors and continues. Capture ends writer descendants and database sessions and records same-execution resumption. Request-bound final withdrawal instead keeps the native gate closed and removes application execution before publication. Publication retries read the retained point without recreating source writers. Explicit capture-bound cancellation uses the existing finite native Job interface to release only an intact completed withdrawal; it does not repair failed capture or discover target authority. Target reconstruction never copies source-local authority or operation state.
 
 ## Building and publishing
 

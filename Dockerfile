@@ -2,6 +2,11 @@
 ARG PAPERLESS_IMAGE=ghcr.io/paperless-ngx/paperless-ngx@sha256:cb91bfb468e63025a9d10c01b54c33665113668eee61b490db96de19b860b9c4
 FROM docker.io/restic/restic:0.19.1@sha256:08916bcda4a4435f9d9828ebb4e91bb7ada3d2c8a53699788930e0ae1bd4fa67 AS restic
 FROM ${PAPERLESS_IMAGE}
+# The pinned native images include Debian's PostgreSQL clients. Keep the
+# complete-state procedure on the owned server's major, without another copy.
+RUN set -eu; \
+    pg_dump --version | /usr/bin/grep -Eq '^pg_dump \(PostgreSQL\) 17\.'; \
+    pg_restore --version | /usr/bin/grep -Eq '^pg_restore \(PostgreSQL\) 17\.'
 COPY --from=restic /usr/bin/restic /usr/bin/restic
 COPY runtime/native.py /opt/bartl/native.py
 COPY runtime/https_settings.py /usr/src/paperless/src/bartl_https_settings.py

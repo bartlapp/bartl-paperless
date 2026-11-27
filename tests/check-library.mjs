@@ -33,7 +33,6 @@ const observed = {
     const selected = select(document, ['id', 'title', 'content', 'owner', 'permissions', 'tags',
       'archive_serial_number', 'root_document', 'versions', 'created', 'correspondent',
       'document_type', 'storage_path', 'custom_fields']);
-    for (const version of selected.versions) version.added = new Date(version.added).toISOString();
     return selected;
   }).sort((a, b) => a.id - b.id),
   users: (await json('/api/users/?page_size=1000')).results.map(user => select(user,
@@ -78,4 +77,4 @@ if (mode === 'baseline') {
   await writeFile(config.expectedFile, JSON.stringify(observed, null, 2), {mode: 0o600});
 }
 console.log(JSON.stringify({mode, files, metadata: true, permissions: true,
-  search: true, workflow: true, versionTimestampPrecision: 'native milliseconds'}));
+  search: true, workflow: true, versionTimestampPrecision: 'unchanged native API timestamp strings'}));

@@ -36,7 +36,8 @@ func (r *Reconciler) SetupWithManager(m ctrl.Manager) error {
 	intentChanges := predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration() ||
 			e.ObjectOld.GetDeletionTimestamp().IsZero() != e.ObjectNew.GetDeletionTimestamp().IsZero() ||
-			e.ObjectOld.GetAnnotations()["paperless.bartl.sh/backup-request"] != e.ObjectNew.GetAnnotations()["paperless.bartl.sh/backup-request"]
+			e.ObjectOld.GetAnnotations()["paperless.bartl.sh/backup-request"] != e.ObjectNew.GetAnnotations()["paperless.bartl.sh/backup-request"] ||
+			e.ObjectOld.GetAnnotations()[cancelWithdrawalAnnotation] != e.ObjectNew.GetAnnotations()[cancelWithdrawalAnnotation]
 	}}
 	return ctrl.NewControllerManagedBy(m).
 		For(&api.PaperlessApplication{}, builder.WithPredicates(intentChanges)).
@@ -225,7 +226,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	if a.Status.Backup.Withdrawn {
 		// Final capture has durably ended every native writer. Publication
 		// needs only its retained export, never a replacement application Pod.
-		condition(a, "Ready", metav1.ConditionFalse, "WritesWithdrawn", "Final capture withdrew source writers; publication or retirement remains")
+		condition(a, "Ready", metav1.ConditionFalse, "WritesWithdrawn", "Final capture withdrew source writers; publication, explicit cancellation or retirement remains")
 		a.Status.State = "WritesWithdrawn"
 		if err := r.withdrawIngress(ctx, a); err != nil {
 			return ctrl.Result{}, err
@@ -238,6 +239,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 			return r.save(ctx, a)
 		}
 		a.Status.Replicas = 0
+		if (a.Annotations[cancelWithdrawalAnnotation] != "" && a.Annotations[cancelWithdrawalAnnotation] == a.Status.Backup.CaptureOperation) ||
+			(a.Status.Operation != nil && a.Status.Operation.Kind == "cancel-withdrawal") {
+			return r.cancelWithdrawal(ctx, a)
+		}
 		return r.backup(ctx, a, nil, nil)
 	}
 	if a.Status.TargetVersion != "" && a.Status.TargetVersion != desired(a) && a.Status.PreparedVersion != a.Status.TargetVersion {

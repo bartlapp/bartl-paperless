@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import ssl
 import subprocess
 import sys
@@ -23,6 +24,7 @@ SERVICES = ('svc-webserver', 'svc-scheduler', 'svc-consumer', 'svc-worker')
 VERSIONS = ('3.3.0', '3.3.1')
 ID = re.compile(r'^[a-f0-9]{64}$')
 OP = re.compile(r'^[a-zA-Z0-9-]{1,100}$')
+OWNED_DIRECTORIES = ('data', 'media', 'consume')
 
 
 def required(name):
@@ -213,15 +215,12 @@ def tags():
 
 
 def inventory(directory):
+    directory = Path(directory)
     found = {}
-    for path in sorted(Path(directory).rglob('*')):
-        if path.is_symlink():
-            raise RuntimeError(f'Unexpected symlink in capture: {path}')
-        if path.is_dir():
-            continue
-        if not path.is_file():
+    for path in sorted(files_under(directory)):
+        if path.is_symlink() or not path.is_file():
             raise RuntimeError(f'Unexpected nonregular capture member: {path}')
-        if path.name == 'bartl-manifest.json' and path.parent == Path(directory):
+        if path.name == 'bartl-manifest.json' and path.parent == directory:
             continue
         digest = hashlib.sha256()
         size = 0
@@ -235,11 +234,14 @@ def inventory(directory):
 
 def verify_capture(directory):
     manifest = load(Path(directory) / 'bartl-manifest.json')
-    if (not manifest or manifest.get('format') != 1 or manifest.get('identity') != identity()
+    if (not manifest or manifest.get('format') != 2 or manifest.get('identity') != identity()
             or manifest.get('version') not in VERSIONS):
         raise RuntimeError('Foreign, incomplete or incompatible capture manifest')
     actual = inventory(directory)
-    if actual != manifest.get('files') or 'export/manifest.json' not in actual:
+    if (actual != manifest.get('files') or not actual.get('database.dump', {}).get('bytes')
+            or any(not (Path(directory) / 'files' / name).is_dir() for name in OWNED_DIRECTORIES)
+            or any(name != 'database.dump' and not any(
+                name.startswith(f'files/{root}/') for root in OWNED_DIRECTORIES) for name in actual)):
         raise RuntimeError('Capture inventory or content integrity mismatch')
     return manifest
 
@@ -282,17 +284,39 @@ def inspect():
         return result({k: v for k, v in record.items() if k not in ('identity', 'path')})
 
 
-def empty_import_target():
+def postgres(*args):
+    environment = os.environ.copy()
+    environment.update(PGHOST=required('PAPERLESS_DBHOST'),
+                       PGPORT=os.environ.get('PAPERLESS_DBPORT', '5432'),
+                       PGDATABASE=os.environ.get('PAPERLESS_DBNAME', 'paperless'),
+                       PGUSER=os.environ.get('PAPERLESS_DBUSER', 'paperless'),
+                       PGPASSWORD=required('PAPERLESS_DBPASS'))
+    return command(args, env=environment)
+
+
+def restore_state(directory):
+    directory = Path(directory)
+    verify_capture(directory)
+    # No native migrations or application tables may precede a full restore.
     with database() as db:
-        for query in (
-            'SELECT count(*) FROM documents_document',
-            "SELECT count(*) FROM auth_user WHERE username NOT IN ('consumer','AnonymousUser')",
-            'SELECT count(*) FROM authtoken_token',
-        ):
-            if db.execute(query).fetchone()[0]:
-                raise RuntimeError('Native import requires empty documents, business users and tokens')
-    if any(files_under(HOME / 'media')) or any(files_under(HOME / 'consume')):
-        raise RuntimeError('Native import requires empty document and consumption files')
+        if db.execute("SELECT EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public')").fetchone()[0]:
+            raise RuntimeError('Native database restore requires an empty owned database')
+    for name in OWNED_DIRECTORIES:
+        if any(p.name != 'migration_lock' or name != 'data' for p in files_under(HOME / name)):
+            raise RuntimeError('Native file restore requires empty owned directories')
+    postgres('pg_restore', '--exit-on-error', '--single-transaction', '--no-owner',
+             '--no-privileges', '--dbname', os.environ.get('PAPERLESS_DBNAME', 'paperless'),
+             str(directory / 'database.dump'))
+    for name in OWNED_DIRECTORIES:
+        source, destination = directory / 'files' / name, HOME / name
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+        restored = inventory(destination)
+        expected = inventory(source)
+        # /init may already own its empty migration lock on the target.
+        if name == 'data' and 'migration_lock' not in expected:
+            restored.pop('migration_lock', None)
+        if restored != expected:
+            raise RuntimeError('Restored native file inventory mismatch')
 
 
 def bind():
@@ -328,19 +352,17 @@ def prepare(migration=False):
             verify_capture(recovery['path'])
         save(STATE / 'transition.json', {'operation': required('BARTL_OPERATION'), 'kind': mode,
                                        'version': version(), 'startedAt': now()})
-        # Import's native reindex expects the directories normally made by /init.
-        # Reuse that initializer instead of reconstructing its folder inventory.
+        if recovery:
+            authority()
+            restore_state(recovery['path'])
+        # Reuse the native directory initializer after restoring owned state.
         subprocess.run(['/usr/bin/bash', '/etc/s6-overlay/s6-rc.d/init-folders/run'],
                        cwd=SOURCE, stdout=sys.stderr, stderr=sys.stderr,
                        timeout=1800, check=True)
         # These are the same native compatibility check/migrations used by init-migrations.
         manage('check', '--tag', 'compatibility', 'paperless')
         manage('migrate', '--skip-checks', '--no-input')
-        if recovery:
-            empty_import_target()
-            authority()
-            manage('document_importer', str(Path(recovery['path']) / 'export'), '--no-progress-bar')
-        elif mode == 'Empty' and os.environ.get('PAPERLESS_ADMIN_USER'):
+        if mode == 'Empty' and os.environ.get('PAPERLESS_ADMIN_USER'):
             os.environ.update(DJANGO_SUPERUSER_USERNAME=required('PAPERLESS_ADMIN_USER'),
                               DJANGO_SUPERUSER_PASSWORD=required('PAPERLESS_ADMIN_PASSWORD'),
                               DJANGO_SUPERUSER_EMAIL=os.environ.get('PAPERLESS_ADMIN_MAIL', ''))
@@ -374,9 +396,9 @@ def withdrawal_receipt():
             or captured.get('path') != str(STAGING / 'captures' / operation)):
         raise RuntimeError('Completed withdrawal binding is invalid')
     # Capture wrote this receipt only after verification. Publication rechecks
-    # all bytes; observing a closed gate need not rehash the entire export.
+    # all bytes; observing a closed gate need not rehash the entire point.
     manifest = load(Path(captured['path']) / 'bartl-manifest.json')
-    if (not manifest or manifest.get('format') != 1 or manifest.get('identity') != identity()
+    if (not manifest or manifest.get('format') != 2 or manifest.get('identity') != identity()
             or manifest.get('operation') != operation or manifest.get('execution') != execution
             or manifest.get('capturedAt') != captured.get('capturedAt')
             or manifest.get('version') != version()):
@@ -384,9 +406,66 @@ def withdrawal_receipt():
     return captured
 
 
+def cancel_withdrawal():
+    with exclusive():
+        app = authority()
+        operation = required('BARTL_OPERATION')
+        capture_operation = required('BARTL_PREPARE_MODE')
+        admitted = app.get('status', {}).get('operation', {})
+        backup = app.get('status', {}).get('backup', {})
+        if (not OP.fullmatch(operation) or not OP.fullmatch(capture_operation)
+                or admitted.get('id') != operation or admitted.get('kind') != 'cancel-withdrawal'
+                or admitted.get('mode') != capture_operation
+                or backup.get('captureOperation') != capture_operation or not backup.get('withdrawn')):
+            raise RuntimeError('Withdrawal cancellation no longer has current admission')
+        cancellation_path = STATE / 'cancellations' / (capture_operation + '.json')
+        cancelled = load(cancellation_path)
+        captured = load(STATE / 'capture.json')
+        if cancelled:
+            if (cancelled.get('operation') != operation
+                    or cancelled.get('state') != 'WithdrawalCancelled'
+                    or cancelled.get('version') != version()
+                    or cancelled.get('applicationUID') != required('BARTL_UID')
+                    or cancelled.get('captureOperation') != capture_operation
+                    or cancelled.get('execution') != backup.get('execution')
+                    or not captured or captured.get('operation') != capture_operation
+                    or captured.get('execution') != cancelled['execution']
+                    or captured.get('capturedAt') != cancelled.get('capturedAt')
+                    or captured.get('state') not in ('Captured', 'Cancelled')):
+                raise RuntimeError('Withdrawal cancellation binding is invalid')
+        else:
+            captured = withdrawal_receipt()
+            if (not captured or captured['operation'] != capture_operation
+                    or captured['execution'] != backup.get('execution')):
+                raise RuntimeError('Cancellation requires a completed bound withdrawal')
+            verify_capture(captured['path'])
+            cancelled = {'state': 'WithdrawalCancelled', 'operation': operation,
+                         'applicationUID': required('BARTL_UID'), 'captureOperation': capture_operation,
+                         'execution': captured['execution'], 'version': version(),
+                         'capturedAt': captured['capturedAt']}
+            save(cancellation_path, cancelled)
+        marker = load(STATE / 'transition.json')
+        if marker and (marker.get('state') != 'Captured'
+                       or marker.get('operation') != capture_operation
+                       or marker.get('execution') != cancelled['execution'] or not marker.get('withdrawn')):
+            raise RuntimeError('Cancellation cannot repair an incomplete native transition')
+        # Receipt first, then invalidate stale capture completion, then release
+        # only this completed gate. A crash at any point is idempotently resumable.
+        captured.update(state='Cancelled', withdrawn=False, cancellationOperation=operation)
+        save(STATE / 'capture.json', captured)
+        if marker:
+            (STATE / 'transition.json').unlink()
+            fd = os.open(STATE, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        return result(cancelled)
+
+
 def gate():
     # Observation only: no writer admission or mutation. A completed final
-    # export remains publishable if this container replaced its capture
+    # point remains publishable if this container replaced its capture
     # execution before the controller observed the durable receipt.
     captured = withdrawal_receipt()
     if captured:
@@ -468,6 +547,10 @@ def broker_empty():
 def settled():
     sys.path.insert(0, str(SOURCE))
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'paperless.settings')
+    # Inspection replies can contain pickled native model arguments for active
+    # or reserved work. Load their model registry before decoding those replies.
+    import django
+    django.setup()
     from paperless.celery import app
     inspector = app.control.inspect(timeout=5)
     for method in ('active', 'reserved', 'scheduled'):
@@ -481,10 +564,31 @@ def settled():
     return broker_empty() and not any(files_under(HOME / 'consume'))
 
 
+def assert_settled_state():
+    # Empty broker/worker replies alone can hide a task whose process died.
+    # Retain ambiguous inputs for diagnosis; do not invent a replay procedure.
+    import django
+    django.setup()
+    from django.conf import settings
+    from documents.models import PaperlessTask
+    if PaperlessTask.objects.filter(status__in=('pending', 'started')).exists():
+        raise RuntimeError('Unresolved native task state; complete capture refused')
+    if any(files_under(settings.SCRATCH_DIR)):
+        raise RuntimeError('Unresolved native scratch files; complete capture refused')
+    # The native command only renders findings and exits successfully even
+    # for missing originals. Use its same native API and enforce its errors.
+    from documents.sanity_checker import check_sanity
+    messages = check_sanity()
+    messages.log_messages()
+    if messages.has_error:
+        raise RuntimeError('Native document sanity check failed; complete capture refused')
+
+
 def capture(operation, execution, seconds):
     with exclusive():
         current = load(STATE / 'capture.json')
-        if not current or current['operation'] != operation or current['execution'] != execution:
+        if (not current or current.get('state') != 'Capturing'
+                or current['operation'] != operation or current['execution'] != execution):
             raise RuntimeError('Capture admission changed')
         try:
             authority(execution)
@@ -518,18 +622,32 @@ def capture(operation, execution, seconds):
                     raise RuntimeError('Drain deadline exceeded with PostgreSQL sessions still present')
                 time.sleep(1)
             authority(execution)
+            assert_settled_state()
             directory = STAGING / 'captures' / operation
-            export = directory / 'export'
-            export.mkdir(mode=0o700, parents=True, exist_ok=False)
+            directory.mkdir(mode=0o700, parents=True, exist_ok=False)
             current['capturedAt'] = now()
-            manage('document_exporter', str(export), '--no-progress-bar')
-            # filelock retains the media lock; root export must not make later
-            # UID-1000 ingestion unable to acquire it (including empty libraries).
-            try:
-                os.chown(HOME / 'media/media.lock', 1000, 1000)
-            except FileNotFoundError:
-                pass
-            manifest = {'format': 1, 'identity': identity(), 'version': version(),
+            postgres('pg_dump', '--format=custom', '--no-owner', '--no-privileges',
+                     '--exclude-table=public.bartl_binding', '--file', str(directory / 'database.dump'))
+            # The same stopped-writer boundary covers database and every owned
+            # native file, including versions, classifier and search data.
+            for name in OWNED_DIRECTORIES:
+                source = HOME / name
+                source_files = inventory(source)  # Refuse symlinks/special files.
+                destination = directory / 'files' / name
+                shutil.copytree(source, destination)
+                if inventory(destination) != source_files:
+                    raise RuntimeError('Native capture file copy integrity mismatch')
+            # Complete receipts must not outlive unflushed dump/copied bytes.
+            for root, _, names in os.walk(directory, topdown=False):
+                for name in names:
+                    with (Path(root) / name).open('rb') as stream:
+                        os.fsync(stream.fileno())
+                fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            manifest = {'format': 2, 'identity': identity(), 'version': version(),
                         'operation': operation, 'execution': execution, 'capturedAt': current['capturedAt'],
                         'files': inventory(directory)}
             save(directory / 'bartl-manifest.json', manifest)
@@ -571,7 +689,7 @@ def begin_capture(operation, execution, seconds):
         if existing and existing['operation'] == operation:
             return result(existing)
         observe()
-        if existing and existing['state'] != 'Captured':
+        if existing and existing['state'] not in ('Captured', 'Cancelled'):
             raise RuntimeError('Conflicting or unresolved capture')
         current = {'operation': operation, 'execution': execution, 'state': 'Capturing',
                    'startedAt': now(), 'resumed': False,
@@ -592,6 +710,9 @@ def begin_capture(operation, execution, seconds):
 def publish(operation):
     if not OP.fullmatch(operation):
         raise RuntimeError('Invalid capture operation')
+    cancelled = load(STATE / 'cancellations' / (operation + '.json'))
+    if cancelled and cancelled.get('captureOperation') == operation:
+        raise RuntimeError('Cancelled withdrawal capture is not publishable')
     authority()
     directory = STAGING / 'captures' / operation
     manifest = verify_capture(directory)
@@ -634,6 +755,8 @@ def main():
     elif name in ('begin-capture', 'capture'):
         fn = begin_capture if name == 'begin-capture' else capture
         fn(sys.argv[2], sys.argv[3], int(sys.argv[4]))
+    elif name == 'cancel-withdrawal':
+        cancel_withdrawal()
     elif name == 'publish':
         publish(sys.argv[2])
     else:

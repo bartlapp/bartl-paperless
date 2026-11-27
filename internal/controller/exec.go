@@ -217,8 +217,8 @@ func expectedCaptureTransition(message, operation, execution string) bool {
 	return marker.Operation == operation && marker.Execution == execution && (marker.State == "Capturing" || marker.State == "Captured")
 }
 
-// A replacement container cannot resume a final capture's writers. Its gate
-// can still expose the verified durable receipt through the existing native
+// While final withdrawal is active, a replacement container cannot resume its
+// writers. Its gate exposes the verified durable receipt through the existing
 // termination boundary, bound to this application and admitted operation.
 func completedWithdrawal(a *api.PaperlessApplication, p *corev1.Pod) (*CaptureObservation, error) {
 	for _, container := range p.Status.ContainerStatuses {

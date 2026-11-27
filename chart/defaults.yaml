@@ -1,9 +1,9 @@
 controller:
-  image: ghcr.io/bartlapp/bartl-paperless-controller@sha256:02dafa4a0112c1e235dabe350b923aded20a429659005e7464f19e19e4939392
+  image: ghcr.io/bartlapp/bartl-paperless-controller@sha256:c8e3b599f94e0dafab16bb41c002d73961a74bca8c1e31c519cf51fcad53bc99
   imagePullPolicy: IfNotPresent
 images:
-  runtime330: ghcr.io/bartlapp/bartl-paperless-runtime@sha256:723da94c1a683cc9c97284fc78451385c500645c992b143092aebad3994b7d66
-  runtime331: ghcr.io/bartlapp/bartl-paperless-runtime@sha256:6632302376836a7b5762ae47a643645258fc4713949079b0574bfbd5fed846fd
+  runtime330: ghcr.io/bartlapp/bartl-paperless-runtime@sha256:74ead8a7021c74f6326b218740dc1276ff716f4e694a2ff423738a84e9f943ad
+  runtime331: ghcr.io/bartlapp/bartl-paperless-runtime@sha256:9e3afdb1a283a20b0cabed2b59f3e2a819baa3b054225cd031e552c9a8eda7e3
   postgres: docker.io/library/postgres@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
   redis: docker.io/library/redis@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621
 claims:
