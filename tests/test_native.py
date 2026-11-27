@@ -39,6 +39,22 @@ class FileObservationTests(unittest.TestCase):
             finally:
                 root.chmod(0o700)
 
+    def test_predecessor_binding_is_not_owned_state_for_a_new_application(self):
+        for owner in (None, 'predecessor'):
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(native, 'STATE', Path(directory)), patch.dict(os.environ, {
+                        'BARTL_INSTALLATION': 'installation', 'BARTL_INSTANCE': 'records',
+                        'BARTL_UID': 'replacement',
+                    }):
+                binding = {'identity': native.identity(), 'version': '3.3.1', 'storageID': 'retired-storage'}
+                if owner is not None:
+                    binding['applicationUID'] = owner
+                native.save(Path(directory) / 'binding.json', binding)
+                with patch.object(native, 'database') as database:
+                    with self.assertRaises(RuntimeError):
+                        native.observe()
+                    database.assert_not_called()
+
     def test_changed_export_bytes_refuse_reconstruction(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             'BARTL_INSTALLATION': 'test-installation', 'BARTL_INSTANCE': 'records',

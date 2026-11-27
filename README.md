@@ -10,7 +10,7 @@ New deployment: follow the steps below. Existing deployment: [resume access](#re
 
 ## Package and target
 
-Candidate **0.3.0-dev.3** targets Paperless 3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1 through API `paperless.bartl.sh/v1alpha2`. Updates replace the installation on independent storage; in-place package/native upgrades and predecessor Kubernetes-resource adoption are not supported. Format-1 package backups from Paperless **3.3.0 and 3.3.1** are supported inputs. The target automatically imports with the matching immutable runtime, then performs the native 3.3.0 → 3.3.1 transition when necessary. Both runtime digests ship in the selected chart. This transition updates the Tantivy search schema from 3 to 4; it is not a new Django database migration. Other source versions and downgrades are refused.
+Candidate **0.3.0-dev.4** targets Paperless 3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1 through API `paperless.bartl.sh/v1alpha2`. Updates replace the installation on independent storage; in-place package/native upgrades and predecessor Kubernetes-resource adoption are not supported. Format-1 package backups from Paperless **3.3.0 and 3.3.1** are supported inputs. The target automatically imports with the matching immutable runtime, then performs the native 3.3.0 → 3.3.1 transition when necessary. Both runtime digests ship in the selected chart. This transition updates the Tantivy search schema from 3 to 4; it is not a new Django database migration. Other source versions and downgrades are refused.
 
 Use the [operator tools](https://github.com/bartlapp/bartl-app/blob/main/docs/operator-workstation.md#check-the-workstation) and a Linux amd64 single-node K3s profile with enforced NetworkPolicy, Traefik in kube-system and four ReadWriteOnce claims. Storage must support POSIX permissions, locks, atomic rename and fsync. Native setup needs root; ordinary services use UID 1000. One namespace holds one release named paperless and no unrelated workloads. The supported profile has one container, one Celery worker/thread and local-path storage, not HA or multi-node RWO placement. [Base](https://github.com/bartlapp/base-k3s/blob/main/README.md) supplies this profile.
 
@@ -34,7 +34,7 @@ umask 077
 kubectl --context "$KUBE_CONTEXT" get nodes,storageclass
 mkdir -p "$WORK_DIR/packages"
 CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-export PACKAGE_VERSION=0.3.0-dev.3
+export PACKAGE_VERSION=0.3.0-dev.4
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$PACKAGE_VERSION" --untar --untardir "$CHART_STAGE"
 export PACKAGE_VERSION
 PACKAGE_VERSION=$(helm show chart "$CHART_STAGE/bartl-paperless" | yq -er '.version')
@@ -628,7 +628,7 @@ Before interrupting a reachable source, acquire the selected replacement package
 export TARGET_PACKAGE=paperless-replacement
 mkdir -p "$WORK_DIR/packages"
 TARGET_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-export TARGET_PACKAGE_VERSION=0.3.0-dev.3
+export TARGET_PACKAGE_VERSION=0.3.0-dev.4
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$TARGET_PACKAGE_VERSION" --untar --untardir "$TARGET_STAGE"
 export TARGET_PACKAGE_VERSION
 TARGET_PACKAGE_VERSION=$(helm show chart "$TARGET_STAGE/bartl-paperless" | yq -er '.version')
@@ -640,7 +640,7 @@ if [ -n "$MATCHING_PACKAGE" ]; then TARGET_PACKAGE="$MATCHING_PACKAGE"; fi
 
 ### Final capture and source retirement
 
-This final-capture operation is supplied by 0.3.0-dev.3. For an earlier source, use its retained release's capture and retirement procedures and complete its writer withdrawal before target preparation; do not send an unsupported annotation or apply this controller in place. Supported backup/data versions do not certify an older package's production-withdrawal behavior.
+This final-capture operation is supplied by 0.3.0-dev.4. For an earlier source, use its retained release's capture and retirement procedures and complete its writer withdrawal before target preparation; do not send an unsupported annotation or apply this controller in place. Supported backup/data versions do not certify an older package's production-withdrawal behavior.
 
 For a reachable source, load its retained context and [prepare the chart-backed operation](#prepare-a-chart-backed-operation), then withdraw all intake paths and prevent concurrent publication/configuration changes. Keep its writer execution running for final capture. Disable public ingress and schedules, then capture:
 
@@ -982,7 +982,7 @@ helm uninstall "$RELEASE" --kube-context "$KUBE_CONTEXT" -n "$NS" --cascade=fore
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc,secrets
 ```
 
-Finalization drains dependencies and releases only this CR's claim bindings. Claims/data/Secrets survive. Do not bypass finalizers or delete controller/namespace first. A timeout is not authorization to force deletion.
+Finalization removes owned execution and access, but retains claims, data, Secrets and the original claim-owner annotations. A new application cannot acquire those retired claims; reconstruct on independent storage. Do not clear ownership bindings, bypass finalizers or delete the controller/namespace first. A timeout is not authorization to force deletion.
 
 Recovery after removal uses an independent target and a supported backup, not adoption of old management resources or manual marker removal. Namespace/PVC deletion needs a separate data-disposition decision. Infrastructure and owned DNS cleanup are separate; never delete shared CRDs, external services or backup history as application cleanup.
 
@@ -1015,7 +1015,7 @@ The consistent point is one native export plus its format-1 inventory, hashes, l
 | Search index and derived classifier data | Rebuilt through native import/startup. Import 3.3.0 with its matching runtime, then complete native schema 3 → 4 reindex before target completion. |
 | DRF API tokens and Django browser sessions | Not exported. Users log in again; required API consumers reacquire tokens through native administration without resetting imported identities. |
 | Paperless secret key, configuration, TLS, selected OIDC inputs, backup credentials/encryption key | Independently retained inputs, not available solely inside the encrypted point. External services retain their own authority. |
-| Capture staging and local binding/transition records | Target-local coordination and publication retry. Replacement imports only the native export, never predecessor operation records, runtime intent or Kubernetes ownership. |
+| Capture staging and local binding/transition records | Target-local coordination and publication retry. Paired database/file bindings include the current application UID; a new application cannot adopt an older target's binding. Replacement imports only the native export, never predecessor operation records, runtime intent or Kubernetes ownership. |
 
 The profile covers API/browser intake and metadata-assignment workflows. Mail polling, remote OCR/AI, custom scripts, external-effect workflows, shared databases/brokers and optional DB read caching are not implicitly qualified. PostgreSQL and Redis are dedicated owned components. Export timestamp precision and post-backup records decisions remain explicit recovery limits.
 
@@ -1040,7 +1040,7 @@ The selected archive ships the service interface and static defaults. Inputs und
 
 Connection rendering exposes HTTPS, OIDC/backup requests, credential bindings and storage claims. Configuration rendering exposes the configuration Secret environment. Protected values are added locally, never to VALUES. Refresh derived bindings after inputs change. Deployment selection validates namespace, Helm release and package version; its sole operational override is static `ingressEnabled`. Runtime intent has no installation-values copy.
 
-Exact-artifact qualification belongs in the existing release record. Historical 0.2.1, 0.3.0-dev.1 and 0.3.0-dev.2 results do not qualify changed paths in 0.3.0-dev.3. Standalone acceptance remains separate from later coordinated multi-application qualification.
+Exact-artifact qualification belongs in the existing release record. Earlier candidate results do not qualify changed paths in 0.3.0-dev.4. Standalone acceptance remains separate from later coordinated multi-application qualification.
 
 ## Maintainer procedures and evidence
 

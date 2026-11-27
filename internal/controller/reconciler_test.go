@@ -577,7 +577,7 @@ func TestDurableCaptureCompletionSurvivesContainerReplacement(t *testing.T) {
 	}
 }
 
-func TestFinalizationWaitsForFixedResourcesBeforeReleasingClaims(t *testing.T) {
+func TestFinalizationWaitsForOwnedResourcesAndPreventsDataAdoption(t *testing.T) {
 	a := applicationFixture()
 	now := metav1.Now()
 	a.DeletionTimestamp = &now
@@ -601,7 +601,7 @@ func TestFinalizationWaitsForFixedResourcesBeforeReleasingClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	if claim.Annotations[ownerAnnotation] != string(a.UID) {
-		t.Fatal("claim released while a fixed-name resource still blocks successor admission")
+		t.Fatal("retained data lost its ownership while resources were draining")
 	}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(a), a); err != nil {
 		t.Fatal("application finalized before resource cleanup:", err)
@@ -622,8 +622,10 @@ func TestFinalizationWaitsForFixedResourcesBeforeReleasingClaims(t *testing.T) {
 	if err := r.Get(ctx, client.ObjectKeyFromObject(claim), claim); err != nil {
 		t.Fatal(err)
 	}
-	if claim.Annotations[ownerAnnotation] != "" {
-		t.Fatal("claim remained bound after complete finalization")
+	successor := applicationFixture()
+	successor.UID = "replacement"
+	if err := r.acquire(ctx, successor); !permanentOperation(err) {
+		t.Fatalf("successor adopted predecessor storage after finalization: %v", err)
 	}
 }
 

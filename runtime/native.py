@@ -162,11 +162,12 @@ def observe():
     if load(STATE / 'transition.json'):
         raise RuntimeError('Interrupted native transition; retain diagnostics and replace the failed target')
     binding = load(STATE / 'binding.json')
+    if binding and (binding.get('identity') != identity() or binding.get('version') not in VERSIONS
+                    or binding.get('applicationUID') != required('BARTL_UID')):
+        raise RuntimeError('Foreign or incompatible local binding')
     with database() as db:
         tables = {row[0] for row in db.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'")}
         if binding:
-            if binding.get('identity') != identity() or binding.get('version') not in VERSIONS:
-                raise RuntimeError('Foreign or incompatible local binding')
             if not {'bartl_binding', 'documents_document', 'auth_user'} <= tables:
                 raise RuntimeError('Owned database state is missing')
             row = db.execute('SELECT binding FROM bartl_binding WHERE singleton=true').fetchone()
@@ -297,7 +298,7 @@ def empty_import_target():
 def bind():
     from psycopg.types.json import Jsonb
     previous = load(STATE / 'binding.json')
-    binding = {'identity': identity(), 'version': version(),
+    binding = {'identity': identity(), 'version': version(), 'applicationUID': required('BARTL_UID'),
                'storageID': previous['storageID'] if previous else str(uuid.uuid4())}
     with database() as db:
         db.execute('CREATE TABLE IF NOT EXISTS bartl_binding (singleton boolean PRIMARY KEY CHECK(singleton), binding jsonb NOT NULL)')

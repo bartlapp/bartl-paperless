@@ -610,7 +610,7 @@ func (r *Reconciler) stop(ctx context.Context, a *api.PaperlessApplication, dele
 	if !deleting {
 		return r.save(ctx, a)
 	}
-	// Dependencies must also disappear before claim release permits a successor.
+	// Remove stopped dependency workloads before retiring management.
 	for _, name := range []string{"paperless-db", "paperless-redis"} {
 		d := &appsv1.Deployment{}
 		err := r.Reader.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: name}, d)
@@ -634,8 +634,7 @@ func (r *Reconciler) stop(ctx context.Context, a *api.PaperlessApplication, dele
 	if len(pods.Items) != 0 {
 		return r.save(ctx, a)
 	}
-	// Fixed-name dependents must be gone before a new CR can acquire these claims.
-	// Otherwise asynchronous GC can make a valid successor look like a foreign owner.
+	// Remove owned services and access resources before Helm removes the controller.
 	for _, obj := range []client.Object{
 		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "paperless"}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "paperless"}},
@@ -662,29 +661,8 @@ func (r *Reconciler) stop(ctx context.Context, a *api.PaperlessApplication, dele
 		}
 		return r.save(ctx, a)
 	}
-	claims := a.Spec.Claims
-	if a.Status.Claims != nil {
-		claims = *a.Status.Claims
-	}
-	for _, name := range claimNames(claims) {
-		if name == "" {
-			continue
-		}
-		p := &corev1.PersistentVolumeClaim{}
-		err := r.Reader.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: name}, p)
-		if apierrors.IsNotFound(err) {
-			continue
-		}
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if p.Annotations[ownerAnnotation] == string(a.UID) {
-			delete(p.Annotations, ownerAnnotation)
-			if err := r.Update(ctx, p); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-	}
+	// Retained claims keep their original owner. A new application must use
+	// independent storage, not adopt a predecessor's data or operation records.
 	controllerutil.RemoveFinalizer(a, finalizer)
 	return ctrl.Result{}, r.Update(ctx, a)
 }
