@@ -119,12 +119,12 @@ func (r *Reconciler) dependencies(ctx context.Context, a *api.PaperlessApplicati
 			im := a.Spec.Images.Postgres
 			port := int32(5432)
 			path := "/var/lib/postgresql/data"
-			c := corev1.Container{Name: role, Image: im, Env: []corev1.EnvVar{env("POSTGRES_DB", "paperless"), env("POSTGRES_USER", "paperless"), {Name: "POSTGRES_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: a.Spec.ConfigurationSecret}, Key: "PAPERLESS_DBPASS"}}}, env("PGDATA", "/var/lib/postgresql/data/pgdata")}, ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"pg_isready", "-U", "paperless", "-d", "paperless"}}}, PeriodSeconds: 5}}
+			c := corev1.Container{Name: role, Image: im, Env: []corev1.EnvVar{env("POSTGRES_DB", "paperless"), env("POSTGRES_USER", "paperless"), {Name: "POSTGRES_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: a.Spec.ConfigurationSecret}, Key: "PAPERLESS_DBPASS"}}}, env("PGDATA", "/var/lib/postgresql/data/pgdata")}, ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"pg_isready", "-h", "127.0.0.1", "-U", "paperless", "-d", "paperless"}}}, PeriodSeconds: 5}}
 			if role == "redis" {
 				claim = a.Spec.Claims.Broker
 				port = 6379
 				path = "/data"
-				c = corev1.Container{Name: role, Image: a.Spec.Images.Redis, Args: []string{"redis-server", "--appendonly", "yes", "--appendfsync", "everysec"}, ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"redis-cli", "ping"}}}, PeriodSeconds: 5}}
+				c = corev1.Container{Name: role, Image: a.Spec.Images.Redis, Args: []string{"redis-server", "--appendonly", "yes", "--appendfsync", "everysec"}, ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"redis-cli", "-e", "ping"}}}, PeriodSeconds: 5}}
 			}
 			c.Ports = []corev1.ContainerPort{{ContainerPort: port}}
 			c.VolumeMounts = []corev1.VolumeMount{{Name: "data", MountPath: path}}

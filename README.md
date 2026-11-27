@@ -10,7 +10,7 @@ New deployment: follow the steps below. Existing deployment: [resume access](#re
 
 ## Package and target
 
-Candidate **0.3.0-dev.4** targets Paperless 3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1 through API `paperless.bartl.sh/v1alpha2`. Updates replace the installation on independent storage; in-place package/native upgrades and predecessor Kubernetes-resource adoption are not supported. Format-1 package backups from Paperless **3.3.0 and 3.3.1** are supported inputs. The target automatically imports with the matching immutable runtime, then performs the native 3.3.0 → 3.3.1 transition when necessary. Both runtime digests ship in the selected chart. This transition updates the Tantivy search schema from 3 to 4; it is not a new Django database migration. Other source versions and downgrades are refused.
+Candidate **0.3.0-dev.5** targets Paperless 3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1 through API `paperless.bartl.sh/v1alpha2`. Updates replace the installation on independent storage; in-place package/native upgrades and predecessor Kubernetes-resource adoption are not supported. Format-1 package backups from Paperless **3.3.0 and 3.3.1** are supported inputs. The target automatically imports with the matching immutable runtime, then performs the native 3.3.0 → 3.3.1 transition when necessary. Both runtime digests ship in the selected chart. This transition updates the Tantivy search schema from 3 to 4; it is not a new Django database migration. Other source versions and downgrades are refused.
 
 Use the [operator tools](https://github.com/bartlapp/bartl-app/blob/main/docs/operator-workstation.md#check-the-workstation) and a Linux amd64 single-node K3s profile with enforced NetworkPolicy, Traefik in kube-system and four ReadWriteOnce claims. Storage must support POSIX permissions, locks, atomic rename and fsync. Native setup needs root; ordinary services use UID 1000. One namespace holds one release named paperless and no unrelated workloads. The supported profile has one container, one Celery worker/thread and local-path storage, not HA or multi-node RWO placement. [Base](https://github.com/bartlapp/base-k3s/blob/main/README.md) supplies this profile.
 
@@ -34,7 +34,7 @@ umask 077
 kubectl --context "$KUBE_CONTEXT" get nodes,storageclass
 mkdir -p "$WORK_DIR/packages"
 CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-export PACKAGE_VERSION=0.3.0-dev.4
+export PACKAGE_VERSION=0.3.0-dev.5
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$PACKAGE_VERSION" --untar --untardir "$CHART_STAGE"
 export PACKAGE_VERSION
 PACKAGE_VERSION=$(helm show chart "$CHART_STAGE/bartl-paperless" | yq -er '.version')
@@ -474,6 +474,8 @@ Retain the selected administrator credentials through the installation's protect
 
 First check Paperless's native **System Status** with the existing administrator account. Require database, Redis and Celery status `OK` before starting document acceptance. The authenticated native `GET /api/status/` exposes these as `database.status`, `tasks.redis_status` and `tasks.celery_status`; the same check is available in the application UI. Workload rollout and the package's gate/HTTP Ready condition alone do not establish dependency connectivity. If native health does not settle after the operation, retain its errors and diagnose them; do not restart companion components or repeat writes to conceal failure.
 
+Dependency probes use PostgreSQL TCP readiness, excluding its temporary socket-only initialization server, and Redis's error-exit mode. These are startup prerequisites, not a substitute for the native application and document checks below.
+
 Through real HTTPS, verify the installation's agreed useful behavior: local login or the selected OIDC login, document intake/processing, search and original download. Check the grants and workflows actually used by this installation. Verify fresh provider MFA where selected. [OIDC, MFA and token recovery](#oidc-mfa-and-token-recovery) lists the native reader permissions. The full synthetic-library matrix belongs to [package qualification](#maintainer-procedures-and-evidence), not every installation or restart.
 
 ## Resume an existing deployment
@@ -628,7 +630,7 @@ Before interrupting a reachable source, acquire the selected replacement package
 export TARGET_PACKAGE=paperless-replacement
 mkdir -p "$WORK_DIR/packages"
 TARGET_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-export TARGET_PACKAGE_VERSION=0.3.0-dev.4
+export TARGET_PACKAGE_VERSION=0.3.0-dev.5
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$TARGET_PACKAGE_VERSION" --untar --untardir "$TARGET_STAGE"
 export TARGET_PACKAGE_VERSION
 TARGET_PACKAGE_VERSION=$(helm show chart "$TARGET_STAGE/bartl-paperless" | yq -er '.version')
@@ -640,7 +642,7 @@ if [ -n "$MATCHING_PACKAGE" ]; then TARGET_PACKAGE="$MATCHING_PACKAGE"; fi
 
 ### Final capture and source retirement
 
-This final-capture operation is supplied by 0.3.0-dev.4. For an earlier source, use its retained release's capture and retirement procedures and complete its writer withdrawal before target preparation; do not send an unsupported annotation or apply this controller in place. Supported backup/data versions do not certify an older package's production-withdrawal behavior.
+This final-capture operation is supplied by 0.3.0-dev.5. For an earlier source, use its retained release's capture and retirement procedures and complete its writer withdrawal before target preparation; do not send an unsupported annotation or apply this controller in place. Supported backup/data versions do not certify an older package's production-withdrawal behavior.
 
 For a reachable source, load its retained context and [prepare the chart-backed operation](#prepare-a-chart-backed-operation), then withdraw all intake paths and prevent concurrent publication/configuration changes. Keep its writer execution running for final capture. Disable public ingress and schedules, then capture:
 
@@ -1040,7 +1042,7 @@ The selected archive ships the service interface and static defaults. Inputs und
 
 Connection rendering exposes HTTPS, OIDC/backup requests, credential bindings and storage claims. Configuration rendering exposes the configuration Secret environment. Protected values are added locally, never to VALUES. Refresh derived bindings after inputs change. Deployment selection validates namespace, Helm release and package version; its sole operational override is static `ingressEnabled`. Runtime intent has no installation-values copy.
 
-Exact-artifact qualification belongs in the existing release record. Earlier candidate results do not qualify changed paths in 0.3.0-dev.4. Standalone acceptance remains separate from later coordinated multi-application qualification.
+Exact-artifact qualification belongs in the existing release record. Earlier candidate results do not qualify changed paths in 0.3.0-dev.5. Standalone acceptance remains separate from later coordinated multi-application qualification.
 
 ## Maintainer procedures and evidence
 
