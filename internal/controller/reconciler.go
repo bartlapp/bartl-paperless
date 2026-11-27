@@ -271,7 +271,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 			return r.save(ctx, a)
 		}
 		op := a.Status.Operation
-		finished, result, err := r.observeJob(ctx, a, op)
+		finished, result, err := r.observeJob(ctx, a, op, true)
 		if err != nil {
 			if permanentOperation(err) {
 				return r.fail(ctx, a, err)
@@ -499,6 +499,17 @@ func (r *Reconciler) stop(ctx context.Context, a *api.PaperlessApplication, dele
 		}
 	}
 	if op := a.Status.Operation; op != nil && op.Phase != "Succeeded" && op.Phase != "Interrupted" && op.Phase != "Failed" {
+		// Preserve an existing bound result before deleting its execution evidence.
+		// Stop never admits a Job or advances to the next lifecycle step.
+		finished, _, err := r.observeJob(ctx, a, op, false)
+		if err != nil && !permanentOperation(err) {
+			return ctrl.Result{}, err
+		}
+		if finished {
+			condition(a, "Ready", metav1.ConditionFalse, "StopRequested", "Waiting for confirmed drainage")
+			condition(a, "Stopped", metav1.ConditionFalse, "Draining", "App and finite work are being drained")
+			return r.save(ctx, a)
+		}
 		op.Phase = "Interrupted"
 		a.Status.Failure = "Lifecycle operation interrupted by stop; replace failed target before retry"
 	}

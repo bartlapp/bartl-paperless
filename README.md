@@ -4,7 +4,7 @@ Paperless over HTTPS with PostgreSQL, Redis, automatic initialization/reconstruc
 
 New deployment: follow the steps below. Existing deployment: [resume access](#resume-an-existing-deployment), then select an operation. Use workstation Bash, keep tracing off and stop at a failed command. Creation is not a replay or partial-state repair program.
 
-This checkout selects candidate `0.3.0-dev.9`: final capture uses ordinary stop intent instead of withdrawal/cancellation state. Use its exact pinned archive and images with these procedures. The [live evidence and limits](#maintainer-procedures-and-evidence) do not establish complete release qualification; earlier candidates do not qualify changed lifecycle paths.
+This checkout selects candidate `0.3.0-dev.10`: ordinary stop preserves already completed, bound native results without advancing work or reopening writers. It retains the native images from dev.9. Use its exact pinned archive and images with these procedures. The [live evidence and limits](#maintainer-procedures-and-evidence) do not yet establish complete release qualification; earlier candidates do not qualify changed lifecycle paths.
 
 - [Install](#package-and-target), [resume](#resume-an-existing-deployment) and [operate](#stop-start-and-restart)
 - [Capture](#capture-publication-and-retry), [recover and update by replacement](#recovery-and-replacement-upgrade)
@@ -12,7 +12,7 @@ This checkout selects candidate `0.3.0-dev.9`: final capture uses ordinary stop 
 
 ## Package and target
 
-Candidate **0.3.0-dev.9** targets Paperless 3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1 through API `paperless.bartl.sh/v1alpha2`. Updates replace the installation on independent storage; in-place package/native upgrades and predecessor Kubernetes-resource adoption are not supported. Format-2 complete database/file backups from Paperless **3.3.0 and 3.3.1** are supported inputs. The target automatically restores with the matching immutable runtime, then performs the native 3.3.0 → 3.3.1 transition when necessary. Both runtime digests ship in the selected chart. This transition updates the Tantivy search schema from 3 to 4; it is not a new Django database migration. Other source versions, downgrades and format-1 document exports are refused. Format-1 exports omit workflow execution history and cannot provide complete application-state recovery; historical candidates and evidence remain separate.
+Candidate **0.3.0-dev.10** targets Paperless 3.3.1, PostgreSQL 17.6, Redis 8.2.1 and Restic 0.19.1 through API `paperless.bartl.sh/v1alpha2`. Updates replace the installation on independent storage; in-place package/native upgrades and predecessor Kubernetes-resource adoption are not supported. Format-2 complete database/file backups from Paperless **3.3.0 and 3.3.1** are supported inputs. The target automatically restores with the matching immutable runtime, then performs the native 3.3.0 → 3.3.1 transition when necessary. Both runtime digests ship in the selected chart. This transition updates the Tantivy search schema from 3 to 4; it is not a new Django database migration. Other source versions, downgrades and format-1 document exports are refused. Format-1 exports omit workflow execution history and cannot provide complete application-state recovery; historical candidates and evidence remain separate.
 
 Use the [operator tools](https://github.com/bartlapp/bartl-app/blob/main/docs/operator-workstation.md#check-the-workstation) and a Linux amd64 single-node K3s profile with enforced NetworkPolicy, Traefik in kube-system and four ReadWriteOnce claims. Storage must support POSIX permissions, locks, atomic rename and fsync. Native setup needs root; ordinary services use UID 1000. One namespace holds one release named paperless and no unrelated workloads. The supported profile has one container, one Celery worker/thread and local-path storage, not HA or multi-node RWO placement. [Base](https://github.com/bartlapp/base-k3s/blob/main/README.md) supplies this profile.
 
@@ -36,7 +36,7 @@ umask 077
 kubectl --context "$KUBE_CONTEXT" get nodes,storageclass
 mkdir -p "$WORK_DIR/packages"
 CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-export PACKAGE_VERSION=0.3.0-dev.9
+export PACKAGE_VERSION=0.3.0-dev.10
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$PACKAGE_VERSION" --untar --untardir "$CHART_STAGE"
 export PACKAGE_VERSION
 PACKAGE_VERSION=$(helm show chart "$CHART_STAGE/bartl-paperless" | yq -er '.version')
@@ -608,6 +608,8 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication,pods,jobs,de
 
 Require no application, database, Redis or native-Job Pods, including terminating Pods. Requested zero replicas, a submitted stop or an unreachable API is not confirmed termination. Shared/external OIDC and backup services are outside this stop boundary. Interrupted native mutations remain failed across start and controller restart; preserve diagnostics and reconstruct an independent target.
 
+An already completed, bound lifecycle result is not an interrupted data transition. Stop retains that result before removing its Job; a later ordinary start consumes it through normal validation. Stop does not advance to another native step or start writers merely because completion arrived.
+
 ### Start
 
 ```bash
@@ -656,7 +658,7 @@ Before interrupting a reachable source, acquire the selected replacement package
 export TARGET_PACKAGE=paperless-replacement
 mkdir -p "$WORK_DIR/packages"
 TARGET_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-export TARGET_PACKAGE_VERSION=0.3.0-dev.9
+export TARGET_PACKAGE_VERSION=0.3.0-dev.10
 helm pull oci://ghcr.io/bartlapp/bartl-paperless --version "$TARGET_PACKAGE_VERSION" --untar --untardir "$TARGET_STAGE"
 export TARGET_PACKAGE_VERSION
 TARGET_PACKAGE_VERSION=$(helm show chart "$TARGET_STAGE/bartl-paperless" | yq -er '.version')
@@ -1213,6 +1215,8 @@ Only synthetic documents with titles beginning `Synthetic ` are allowed. Inputs 
 On 27 November 2026, exact candidate `0.3.0-dev.9` passed both initialization branches (no repository and configured empty repository), native browser login, complete-state reconstruction and an injected read-only staging failure. The failed capture left the confirmed-intact source usable: existing data verified and a new document was ingested. After removing only the injected filesystem fault, a new atomic backup/stop request published a point and stopped the application without repair or unlock. Ordinary start succeeded without backup credentials; controller/component restarts had not undone the stop. A fresh namespace with independent claims then restored the new point, preserving seven document/version records, fourteen original/archive files, metadata, permissions, search, workflow, retained API tokens and the original browser session. Local checks passed the Go suite, 22 native tests and 15 checks against the exact chart archive.
 
 The same run exercised active-ingestion drain, lost-acknowledgement recovery, stopped publication retry and the native 3.3.0 → 3.3.1 transition on `0.3.0-dev.8`. Those cases were not rerun on `0.3.0-dev.9`. Candidate 8 exposed the intact-source failure-classification defect corrected in candidate 9; retain its evidence as version-specific, not as qualification of the replacement bytes. Exact artifacts, source identities and these limits belong in the respective unpublished draft releases. This run does not complete the full contract matrix or qualify fresh OIDC/MFA, HA or provider-loss recovery.
+
+A subsequent bounded dev.9 run exercised active/queued intake, durable runtime intent, independent component restarts, active capture, lost acknowledgement, stopped publication retry, failure isolation, native 3.3.0 → 3.3.1 reconstruction and fresh OIDC before and after reconstruction. It also exposed a control-bookkeeping defect: stop classified a genuinely completed but unconsumed native preparation as interrupted and required replacement. Candidate dev.10 preserves the existing bound result before draining its execution evidence, without admitting new work under stop. Its corrected controller and final replacement path require exact-artifact qualification; the native images remain unchanged.
 
 Historical 0.1.0 runtime tests on 25 October 2026 restored after source-VM deletion, covering originals/versions, relationships, metadata, permissions, token reacquisition, search and another backup restored into fresh database/file/Redis storage. That export-only candidate had millisecond version-added timestamp precision; it does not qualify format-2 fidelity. Other historical package fault scenarios removed source installations/storage and primary repositories on one disposable K3s host; they do not establish host/provider-loss failover or cross-cluster fencing. The target was Debian 13 amd64, K3s v1.36.5+k3s1, cert-manager 1.21.3 and Helm 4.3.0; Podman 5.4.2 built images.
 

@@ -160,7 +160,7 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 		if b.Publication == nil {
 			return r.backupFailure(ctx, a, fmt.Errorf("publication admission missing"), false)
 		}
-		done, result, err := r.observeJob(ctx, a, b.Publication)
+		done, result, err := r.observeJob(ctx, a, b.Publication, true)
 		if err != nil {
 			if permanentOperation(err) {
 				return r.backupFailure(ctx, a, err, false)

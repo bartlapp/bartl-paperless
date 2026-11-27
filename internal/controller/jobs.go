@@ -29,7 +29,7 @@ func invalidOperation(format string, args ...any) error {
 	return operationError{fmt.Errorf(format, args...)}
 }
 func permanentOperation(err error) bool { _, ok := err.(operationError); return ok }
-func (r *Reconciler) observeJob(ctx context.Context, a *api.PaperlessApplication, op *api.Operation) (bool, *api.NativeResult, error) {
+func (r *Reconciler) observeJob(ctx context.Context, a *api.PaperlessApplication, op *api.Operation, admit bool) (bool, *api.NativeResult, error) {
 	if op.Phase == "Succeeded" {
 		if op.Result == nil {
 			return false, nil, invalidOperation("successful operation lacks bound result")
@@ -42,6 +42,9 @@ func (r *Reconciler) observeJob(ctx context.Context, a *api.PaperlessApplication
 	job := &batchv1.Job{}
 	err := r.Reader.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: op.JobName}, job)
 	if apierrors.IsNotFound(err) {
+		if !admit {
+			return false, nil, invalidOperation("Job %s is missing during stop; refusing admission", op.JobName)
+		}
 		if op.Phase != "Planned" {
 			return false, nil, invalidOperation("admitted Job %s is missing; refusing replay", op.JobName)
 		}

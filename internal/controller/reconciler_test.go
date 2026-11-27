@@ -47,12 +47,25 @@ func owner(t *testing.T, r *Reconciler, a client.Object, b client.Object) {
 		t.Fatal(err)
 	}
 }
+func TestCompletionObservationCannotAdmitPlannedWork(t *testing.T) {
+	a := applicationFixture()
+	a.Spec.Running = pointer(true)
+	r, ctx := fixture(t, a)
+	op := newOperation(a, "prepare", "3.3.1", "Empty")
+	if _, _, err := r.observeJob(ctx, a, op, false); !permanentOperation(err) {
+		t.Fatalf("missing completion did not refuse admission: %v", err)
+	}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: op.JobName}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("completion observation admitted new execution: %v", err)
+	}
+}
+
 func TestPlannedJobAdmissionIsIdempotentAcrossReconcile(t *testing.T) {
 	a := applicationFixture()
 	r, ctx := fixture(t, a)
 	op := newOperation(a, "inspect", "3.3.1", "")
 	for range 2 {
-		done, _, err := r.observeJob(ctx, a, op)
+		done, _, err := r.observeJob(ctx, a, op, true)
 		if err != nil || done {
 			t.Fatalf("unexpected observation done=%v error=%v", done, err)
 		}
@@ -70,7 +83,7 @@ func TestAdmittedMissingJobNeverReplays(t *testing.T) {
 	r, ctx := fixture(t, a)
 	op := newOperation(a, "prepare", "3.3.1", "Empty")
 	op.Phase = "Admitted"
-	_, _, err := r.observeJob(ctx, a, op)
+	_, _, err := r.observeJob(ctx, a, op, true)
 	if !permanentOperation(err) {
 		t.Fatalf("missing admitted Job must fail permanently: %v", err)
 	}
@@ -85,7 +98,7 @@ func TestForeignJobNameCannotBeAdopted(t *testing.T) {
 	j := jobFor(a, op)
 	j.UID = "foreign-job"
 	r, ctx := fixture(t, a, j)
-	_, _, err := r.observeJob(ctx, a, op)
+	_, _, err := r.observeJob(ctx, a, op, true)
 	if !permanentOperation(err) {
 		t.Fatalf("foreign Job was admitted: %v", err)
 	}
@@ -112,14 +125,55 @@ func TestResultMustBindBothApplicationAndOperation(t *testing.T) {
 			if err := r.Create(ctx, p); err != nil {
 				t.Fatal(err)
 			}
-			_, _, err := r.observeJob(ctx, a, op)
+			_, _, err := r.observeJob(ctx, a, op, true)
 			if !permanentOperation(err) {
 				t.Fatalf("unbound result accepted: %v", err)
 			}
 		})
 	}
 }
-func TestStopPreemptsCompletedButUnobservedTransition(t *testing.T) {
+func TestStopPersistsBoundCompletionBeforeDraining(t *testing.T) {
+	a := applicationFixture()
+	a.Spec.Running = pointer(false)
+	a.Status.Operation = newOperation(a, "prepare", "3.3.1", "Empty")
+	a.Status.Operation.Phase = "Admitted"
+	r, ctx := fixture(t, a)
+	j := jobFor(a, a.Status.Operation)
+	j.UID = "job-uid"
+	j.Finalizers = []string{"foregroundDeletion"}
+	j.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	owner(t, r, a, j)
+	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "result", Namespace: a.Namespace, Labels: labels(a, "job")}}
+	p.Labels["batch.kubernetes.io/job-name"] = j.Name
+	owner(t, r, j, p)
+	data, _ := json.Marshal(api.NativeResult{ApplicationUID: string(a.UID), Operation: a.Status.Operation.ID, State: "Prepared", Version: "3.3.1"})
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: containerName, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Message: string(data)}}}}
+	for _, object := range []client.Object{j, p} {
+		if err := r.Create(ctx, object); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(a)}); err != nil {
+		t.Fatal(err)
+	}
+	fresh := &api.PaperlessApplication{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(a), fresh); err != nil {
+		t.Fatal(err)
+	}
+	op := fresh.Status.Operation
+	if running(fresh) || fresh.Status.Failure != "" || op.Phase != "Succeeded" || op.Result == nil || op.Result.State != "Prepared" {
+		t.Fatalf("stop discarded established native completion: %#v", fresh.Status)
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(j), j); err != nil || j.DeletionTimestamp != nil {
+		t.Fatalf("execution evidence drained before completion was persisted: %v", err)
+	}
+	d := &appsv1.Deployment{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: "paperless"}, d); !apierrors.IsNotFound(err) {
+		t.Fatalf("completion reopened writers under stopped intent: %v", err)
+	}
+}
+
+func TestStopRejectsUnprovenJobCompletion(t *testing.T) {
 	a := applicationFixture()
 	a.Spec.Running = pointer(false)
 	a.Status.Operation = newOperation(a, "prepare", "3.3.1", "Empty")
@@ -404,7 +458,7 @@ func TestReplacedAdmittedJobCannotSupplyCompletion(t *testing.T) {
 	if err := r.Create(ctx, j); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := r.observeJob(ctx, a, op)
+	_, _, err := r.observeJob(ctx, a, op, true)
 	if !permanentOperation(err) {
 		t.Fatalf("replacement Job admitted: %v", err)
 	}
@@ -749,7 +803,7 @@ func TestCaptureCompletesUnderOrdinaryStopWithoutResumingWriters(t *testing.T) {
 	if a.Status.Backup.Phase != "Publishing" || a.Status.Backup.Publication == nil {
 		t.Fatal("ordinary stopped capture could not proceed to publication")
 	}
-	if _, _, err := r.observeJob(ctx, a, a.Status.Backup.Publication); err != nil {
+	if _, _, err := r.observeJob(ctx, a, a.Status.Backup.Publication, true); err != nil {
 		t.Fatal(err)
 	}
 	jobs := &batchv1.JobList{}
