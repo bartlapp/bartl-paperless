@@ -1252,17 +1252,30 @@ skopeo copy --authfile "$REGISTRY_AUTH_FILE" --preserve-digests \
   "oci:$OUT/paperless-controller" "docker://ghcr.io/bartlapp/bartl-paperless-controller:$CANDIDATE"
 ```
 
-Verify each registry manifest against its retained `.digest` and retain the chart/checksums and exact source identity in the package's draft release before relying on remote custody. Candidate qualification uses the ordinary operating procedures, with one explicit acquisition difference: at **Select cluster access and obtain the release**, replace only the registry-download block with:
+Verify each registry manifest against its retained `.digest` and retain the chart/checksums and exact source identity in the package's draft release before relying on remote custody. Candidate operators need the supplied archive and its independently retained checksum, not a builder directory or source checkout. Select the supplied file:
+
+```bash
+export CANDIDATE_ARCHIVE=/absolute/path/to/supplied/bartl-paperless-0.3.0-dev.10.tgz
+openssl dgst -sha256 "$CANDIDATE_ARCHIVE"
+```
+
+Compare the printed SHA-256 with the supplied checksum; stop on mismatch. At **Select cluster access and obtain the release**, replace only the registry-download block with:
 
 ```bash
 mkdir -p "$WORK_DIR/packages"
 CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.paperless.XXXXXX")
-tar -xzf "$OUT/bartl-paperless-$RELEASE.tgz" -C "$CHART_STAGE"
+tar -xzf "$CANDIDATE_ARCHIVE" -C "$CHART_STAGE"
 export PACKAGE_VERSION
 PACKAGE_VERSION=$(helm show chart "$CHART_STAGE/bartl-paperless" | yq -er '.version')
 ```
 
-Continue at **Configure a new deployment**. This is candidate qualification, not public-release acceptance. Exercise the maintainer cases above, including fresh OIDC with the supplied CA bundle. Replacement selects the same retained candidate archive instead of downloading a stable chart; keep its native version transition and all retirement/acceptance checks unchanged. After qualification passes, publish the same images under unused release tags and the unchanged chart:
+For a new deployment, continue at **Configure a new deployment**. For replacement, verify the selected candidate above, then replace only the `helm pull` command in [replacement acquisition](#recovery-and-replacement-upgrade) with:
+
+```bash
+tar -xzf "$CANDIDATE_ARCHIVE" -C "$TARGET_STAGE"
+```
+
+Continue with the following `TARGET_PACKAGE_VERSION` derivation and package selection; keep all retirement and acceptance steps unchanged. This is candidate qualification, not public-release acceptance. Exercise the maintainer cases above, including fresh OIDC with the supplied CA bundle. After qualification passes, publish the same images under unused release tags and the unchanged chart:
 
 ```bash
 RELEASE=$(yq -r '.version' "$OUT/chart/Chart.yaml")
