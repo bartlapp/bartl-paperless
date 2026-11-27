@@ -530,7 +530,7 @@ Continue with the selected operation.
 
 ## Capture, publication and retry
 
-Load [retained context](#load-retained-context) only; no chart preparation is needed. Start with an existing running application, backup configured and sufficient staging. Ordinary capture resumes writers when run intent permits it. For a final point followed by ordinary stop, use the atomic request in [Final capture and source stop](#final-capture-and-source-stop).
+Load [retained context](#load-retained-context) only; no chart preparation is needed. A new capture requires an existing running application, backup configured and sufficient staging. Retrying publication requires a retained complete capture and working repository access, not running writers: leave runtime intent unchanged, including an intentional stop. Both use the request below. Ordinary capture resumes writers when run intent permits it. For a final point followed by ordinary stop, use the atomic request in [Final capture and source stop](#final-capture-and-source-stop).
 
 ```bash
 REQUEST="manual-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -708,7 +708,14 @@ For a lost source, select `SOURCE_DEPLOYMENT` and the independently recovered `S
 
 First establish that the target has not accepted production work or caused production effects and cannot do so while the source resumes. Stop any prepared target and confirm termination. If production effects may have occurred, keep the source stopped and reconcile authority and data before deciding how to recover. The package does not inspect another installation.
 
-Load the intact source's retained context and use ordinary start:
+If a target was prepared, remove its operator-owned review route in the target-administration terminal after confirming its stop:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" -n "$NS" delete ingress/paperless-review --ignore-not-found --wait=true
+kubectl --context "$KUBE_CONTEXT" -n "$NS" delete middleware/paperless-review --ignore-not-found
+```
+
+Return to the original source-administration terminal and [load the source's retained context](#load-retained-context), not the replacement deployment. Use ordinary start:
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" patch paperlessapplication/paperless \
@@ -717,9 +724,22 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
   --for=condition=Ready --timeout=30m
 ```
 
-Verify native health and the intact library before restoring source routing and the saved schedule. Start does not enable ingress or select the production route. It does not repair a genuinely incomplete restore/migration. The old point remains a historical backup, not proof of later source work; a later switch requires a new final capture.
+Start does not enable ingress or select the production route. It does not repair a genuinely incomplete restore/migration. The old point remains a historical backup, not proof of later source work; a later switch requires a new final capture.
 
-After confirming that the source's intended route and saved schedule are restored, remove this operation's temporary schedule input so a later switch records the then-current schedule:
+With the target confirmed stopped and the intact source Ready, [prepare the source's chart-backed operation](#prepare-a-chart-backed-operation). If DNS was moved, restore the hostname to the source ingress through [DNS and external TLS](#dns-and-external-tls), retaining its existing TLS configuration and credentials. Restore the source's ordinary route and saved schedule:
+
+```bash
+BACKUP_SCHEDULE=$(cat "$INSTALL_DIR/backup-schedule-before-operation")
+export BACKUP_SCHEDULE
+yq -i '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = true |
+  .services[strenv(INSTANCE)].backup.schedule = strenv(BACKUP_SCHEDULE)' "$VALUES"
+helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" --reset-values --force-conflicts -f "$VALUES" \
+  --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout=5m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
+  --for=condition=Ready --timeout=30m
+```
+
+Verify the source's [native health and useful behavior](#verify-useful-behavior) through its actual HTTPS address, and verify the restored schedule. An originally empty schedule remains manual-only. Only then remove this operation's temporary schedule input so a later switch records the then-current schedule:
 
 ```bash
 rm "$INSTALL_DIR/backup-schedule-before-operation"
@@ -952,7 +972,9 @@ curl --fail --silent --show-error --output /dev/null --max-time 10 \
 
 Require trusted HTTPS from the reviewer address and HTTP 403 from an independent ordinary source, including a request with a forged `X-Forwarded-For` header naming the reviewer. With no `ipStrategy` configured, the allowlist uses the connection source address. Verify the deployed Middleware and other hostname routes if this fails; do not broaden the allowlist. Ordinary ingress and schedules stay disabled throughout review.
 
-From the allowed address, verify the selected point's expected documents, metadata, grants and the installation's agreed search/workflow behavior. Verify fresh local or selected OIDC login and retained API credentials; [token recovery](#oidc-mfa-and-token-recovery) is available if a consumer needs its existing credential delivered again. Complete the [records review](#records-after-restore) before affected use resumes. Ingest a permitted test document, verify processing/search/download and publish another usable recovery point. Review work must remain isolated from production effects; acceptance work does not authorize concurrent production:
+From the allowed address, verify the selected point's expected documents, metadata, grants and the installation's agreed search/workflow behavior. Verify fresh local or selected OIDC login and retained API credentials; [token recovery](#oidc-mfa-and-token-recovery) is available if a consumer needs its existing credential delivered again. Complete the [records review](#records-after-restore) before affected use resumes. Ingest a permitted test document and verify processing/search/download. Review work must remain isolated from production effects; acceptance work does not authorize concurrent production.
+
+Return to the original target-administration terminal, with the target deployment's retained context still selected. The reviewer client needs no Kubernetes credentials. Publish the new work there; keep this administration terminal for the subsequent activation commands:
 
 ```bash
 REQUEST="manual-$(date -u +%Y%m%dT%H%M%SZ)"
