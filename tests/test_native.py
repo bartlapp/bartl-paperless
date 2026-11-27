@@ -108,6 +108,25 @@ class AuthorityTests(unittest.TestCase):
                     native.authority()
             self.assertIs(raised.exception, failure)
 
+    def test_stopped_intent_allows_only_its_admitted_capture(self):
+        for capture_id in ('capture', 'stale'):
+            with self.subTest(capture_id=capture_id), patch.dict(os.environ, {
+                'BARTL_NAMESPACE': 'target', 'BARTL_NAME': 'paperless',
+                'BARTL_UID': 'owner', 'BARTL_POD_NAME': 'app', 'BARTL_POD_UID': 'pod',
+                'BARTL_INSTALLATION': 'installation', 'BARTL_INSTANCE': 'records',
+            }):
+                app = {'metadata': {'uid': 'owner'}, 'spec': {
+                    'running': False, 'replicas': 1, 'identity': native.identity(), 'claims': {}},
+                    'status': {'backup': {'captureOperation': 'capture', 'execution': 'execution',
+                                          'podUID': 'pod', 'phase': 'Capturing'}}}
+                with patch.object(native, 'api', side_effect=[app, {'metadata': {'uid': 'pod'}}]), \
+                        patch.object(native, 'Path', return_value=SimpleNamespace(read_text=lambda: 'execution')):
+                    if capture_id == 'capture':
+                        self.assertIs(native.authority('execution', capture_id), app)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'Capture authority withdrawn'):
+                            native.authority('execution', capture_id)
+
 
 class CaptureAdmissionTests(unittest.TestCase):
     def test_stale_capture_cannot_start_under_a_new_operation(self):
@@ -182,15 +201,14 @@ class AdmissionTests(unittest.TestCase):
 
 
 class CaptureCompletionTests(unittest.TestCase):
-    def test_resumption_outcome_controls_durable_startup_admission(self):
-        for outcome in ('failed', 'interrupted', 'stopped', 'resumed', 'withdrawn'):
+    def test_complete_capture_respects_stop_without_poisoning_source_state(self):
+        for outcome in ('failed', 'interrupted', 'stopped', 'resumed'):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
                 root = Path(directory)
                 state, staging, home = root / 'state', root / 'staging', root / 'home'
                 state.mkdir()
                 current = {'operation': 'capture', 'execution': 'execution',
-                           'state': 'Capturing', 'resumed': False,
-                           'withdrawAfterCapture': outcome == 'withdrawn'}
+                           'state': 'Capturing', 'resumed': False}
                 native.save(state / 'capture.json', current)
                 native.save(state / 'transition.json', current)
                 stack.enter_context(patch.object(native, 'STATE', state))
@@ -202,13 +220,8 @@ class CaptureCompletionTests(unittest.TestCase):
                 stack.enter_context(patch.dict(os.environ, {
                     'BARTL_INSTALLATION': 'installation', 'BARTL_INSTANCE': 'records',
                 }))
-                authority_calls = 0
-                def authority(execution):
-                    nonlocal authority_calls
-                    authority_calls += 1
-                    if outcome == 'stopped' and authority_calls == 3:
-                        raise RuntimeError('Running authority withdrawn')
-                stack.enter_context(patch.object(native, 'authority', side_effect=authority))
+                stack.enter_context(patch.object(native, 'authority', return_value={
+                    'spec': {'running': outcome != 'stopped', 'replicas': 1}}))
                 stack.enter_context(patch.object(native, 'version', return_value='3.3.1'))
                 stack.enter_context(patch.object(native, 'settled', return_value=True))
                 stack.enter_context(patch.object(native, 'native_processes', return_value={}))
@@ -223,8 +236,8 @@ class CaptureCompletionTests(unittest.TestCase):
                     Path(args[-1]).write_bytes(b'complete PostgreSQL state')
                 stack.enter_context(patch.object(native, 'postgres', side_effect=dump))
                 def services(up, names):
-                    if up and outcome in ('stopped', 'withdrawn'):
-                        self.fail('completed capture restarted a withdrawn application')
+                    if up and outcome == 'stopped':
+                        self.fail('completed capture overrode ordinary stop')
                     if up and outcome == 'failed':
                         raise RuntimeError('native service resumption failed')
                     if up and outcome == 'interrupted':
@@ -235,31 +248,12 @@ class CaptureCompletionTests(unittest.TestCase):
                         native.capture('capture', 'execution', 1)
                 else:
                     native.capture('capture', 'execution', 1)
-                self.assertEqual((state / 'transition.json').exists(), outcome != 'resumed')
-                if outcome != 'resumed':
-                    with self.assertRaises(RuntimeError):
-                        native.observe()
-                else:
-                    self.assertTrue(native.load(state / 'capture.json')['resumed'])
-                if outcome == 'withdrawn':
-                    captured = native.load(state / 'capture.json')
-                    self.assertTrue(captured['withdrawn'])
-                    self.assertFalse(captured['resumed'])
-                    self.assertEqual(captured['state'], 'Captured')
-                    native.verify_capture(captured['path'])
-                    termination = root / 'termination.json'
-                    with patch.dict(os.environ, {'BARTL_UID': 'current-application'}), \
-                            patch.object(native, 'authority', side_effect=AssertionError('closed gate must not admit writers')), \
-                            patch.object(native, 'Path', side_effect=lambda p:
-                                termination if p == '/dev/termination-log' else Path(p)):
-                        with self.assertRaises(SystemExit) as stopped:
-                            native.gate()
-                        self.assertEqual(stopped.exception.code, 1)
-                    receipt = native.load(termination)
-                    self.assertEqual(receipt['state'], 'WritesWithdrawn')
-                    self.assertEqual(receipt['applicationUID'], 'current-application')
-                    self.assertEqual(receipt['capture']['operation'], captured['operation'])
-                    self.assertTrue((state / 'transition.json').exists())
+                self.assertFalse((state / 'transition.json').exists())
+                captured = native.load(state / 'capture.json')
+                self.assertEqual(captured['state'], 'Captured')
+                self.assertEqual(captured['resumed'], outcome == 'resumed')
+                native.verify_capture(captured['path'])
+                self.assertEqual(bool(captured.get('resumptionError')), outcome == 'failed')
 
 
 if __name__ == '__main__':

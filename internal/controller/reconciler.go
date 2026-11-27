@@ -36,8 +36,7 @@ func (r *Reconciler) SetupWithManager(m ctrl.Manager) error {
 	intentChanges := predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration() ||
 			e.ObjectOld.GetDeletionTimestamp().IsZero() != e.ObjectNew.GetDeletionTimestamp().IsZero() ||
-			e.ObjectOld.GetAnnotations()["paperless.bartl.sh/backup-request"] != e.ObjectNew.GetAnnotations()["paperless.bartl.sh/backup-request"] ||
-			e.ObjectOld.GetAnnotations()[cancelWithdrawalAnnotation] != e.ObjectNew.GetAnnotations()[cancelWithdrawalAnnotation]
+			e.ObjectOld.GetAnnotations()["paperless.bartl.sh/backup-request"] != e.ObjectNew.GetAnnotations()["paperless.bartl.sh/backup-request"]
 	}}
 	return ctrl.NewControllerManagedBy(m).
 		For(&api.PaperlessApplication{}, builder.WithPredicates(intentChanges)).
@@ -223,28 +222,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 		return ctrl.Result{}, err
 	}
 	condition(a, "Stopped", metav1.ConditionFalse, "RunRequested", "Run intent is active")
-	if a.Status.Backup.Withdrawn {
-		// Final capture has durably ended every native writer. Publication
-		// needs only its retained export, never a replacement application Pod.
-		condition(a, "Ready", metav1.ConditionFalse, "WritesWithdrawn", "Final capture withdrew source writers; publication, explicit cancellation or retirement remains")
-		a.Status.State = "WritesWithdrawn"
-		if err := r.withdrawIngress(ctx, a); err != nil {
-			return ctrl.Result{}, err
-		}
-		done, err := r.drain(ctx, a, false)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if !done {
-			return r.save(ctx, a)
-		}
-		a.Status.Replicas = 0
-		if (a.Annotations[cancelWithdrawalAnnotation] != "" && a.Annotations[cancelWithdrawalAnnotation] == a.Status.Backup.CaptureOperation) ||
-			(a.Status.Operation != nil && a.Status.Operation.Kind == "cancel-withdrawal") {
-			return r.cancelWithdrawal(ctx, a)
-		}
-		return r.backup(ctx, a, nil, nil)
-	}
 	if a.Status.TargetVersion != "" && a.Status.TargetVersion != desired(a) && a.Status.PreparedVersion != a.Status.TargetVersion {
 		return r.fail(ctx, a, fmt.Errorf("version changed during admitted transition"))
 	}
@@ -356,19 +333,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 		return ctrl.Result{}, err
 	}
 	pendingCapture := a.Status.Backup.Phase == "Capturing" || a.Status.Backup.Phase == "Admitting"
-	if pendingCapture && pod != nil {
-		captured, err := completedWithdrawal(a, pod)
-		if err != nil {
-			return r.backupFailure(ctx, a, err, true)
-		}
-		if captured != nil {
-			a.Status.Backup.CapturedAt = captured.CapturedAt
-			a.Status.Backup.Resumed = false
-			a.Status.Backup.Withdrawn = true
-			a.Status.Backup.Phase = "Captured"
-			return r.save(ctx, a)
-		}
-	}
 	if pod == nil || containerID(pod) == "" {
 		if pod != nil {
 			if err := gateFailure(a, pod); err != nil {
@@ -528,6 +492,12 @@ func (r *Reconciler) stop(ctx context.Context, a *api.PaperlessApplication, dele
 	if err := r.withdrawIngress(ctx, a); err != nil {
 		return ctrl.Result{}, err
 	}
+	if !deleting && a.Status.Failure == "" &&
+		(a.Status.Operation == nil || a.Status.Operation.Phase == "Succeeded") {
+		if pending, result, err := r.stoppingBackup(ctx, a); pending {
+			return result, err
+		}
+	}
 	if op := a.Status.Operation; op != nil && op.Phase != "Succeeded" && op.Phase != "Interrupted" && op.Phase != "Failed" {
 		op.Phase = "Interrupted"
 		a.Status.Failure = "Lifecycle operation interrupted by stop; replace failed target before retry"
@@ -538,16 +508,10 @@ func (r *Reconciler) stop(ctx context.Context, a *api.PaperlessApplication, dele
 		// resumption or publication under stopped intent.
 		pod, observationErr := r.liveAppPod(ctx, a)
 		if observationErr == nil && pod != nil {
-			if captured, err := completedWithdrawal(a, pod); err == nil && captured != nil {
-				b.CapturedAt = captured.CapturedAt
-				b.Resumed = false
-				b.Withdrawn = true
-				b.Phase = "Captured"
-			} else if containerID(pod) != "" {
+			if containerID(pod) != "" {
 				if st, err := r.readStatus(ctx, a, pod); err == nil && completedCapture(a, st) {
 					b.CapturedAt = st.Capture.CapturedAt
 					b.Resumed = st.Capture.Resumed
-					b.Withdrawn = st.Capture.Withdrawn
 					b.Phase = "Captured"
 				}
 			}

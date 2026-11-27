@@ -727,425 +727,143 @@ func TestApplicationZeroKeepsDedicatedDependenciesWithoutWholeStop(t *testing.T)
 	}
 }
 
-func TestFinalCaptureCompletesWithoutResumingWriters(t *testing.T) {
+func TestCaptureCompletesUnderOrdinaryStopWithoutResumingWriters(t *testing.T) {
 	r, ctx, a, p := captureFixture(t)
-	a.Status.Backup.Phase = "Capturing"
-	a.Status.Backup.WithdrawAfterCapture = true
-	st := &NativeStatus{
-		Execution: "execution",
-		Failure:   `{"operation":"capture","execution":"execution","state":"Captured"}`,
-		Capture: &CaptureObservation{Operation: "capture", Execution: "execution", State: "Captured",
-			CapturedAt: "2026-11-26T00:00:00Z", Path: "/staging/captures/capture", Withdrawn: true},
+	a.Spec.Running = pointer(false)
+	if err := r.Update(ctx, a); err != nil {
+		t.Fatal(err)
 	}
+	a.Status.Backup.Phase = "Capturing"
+	st := &NativeStatus{Execution: "execution", Capture: &CaptureObservation{
+		Operation: "capture", Execution: "execution", State: "Captured",
+		CapturedAt: "2026-11-26T00:00:00Z", Path: "/staging/captures/capture"}}
 	if _, err := r.backup(ctx, a, p, st); err != nil {
 		t.Fatal(err)
 	}
-	if a.Status.Failure != "" || a.Status.Backup.Phase != "Captured" ||
-		!a.Status.Backup.Withdrawn || a.Status.Backup.Resumed {
-		t.Fatalf("final capture lost withdrawal or required resumption: %#v", a.Status)
+	if a.Status.Failure != "" || a.Status.Backup.Phase != "Captured" || a.Status.Backup.Resumed || running(a) {
+		t.Fatalf("complete capture required writer resumption or changed stop: %#v", a.Status)
 	}
 	if _, err := r.backup(ctx, a, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if a.Status.Backup.Phase != "Publishing" || a.Status.Backup.Publication == nil {
-		t.Fatal("withdrawn capture requires a live writer to publish")
+		t.Fatal("ordinary stopped capture could not proceed to publication")
 	}
-}
-
-func TestFinalPublicationRetryDoesNotReadmitWritersOrCapture(t *testing.T) {
-	a := applicationFixture()
-	a.Annotations = map[string]string{"paperless.bartl.sh/backup-request": "retry"}
-	a.Status.Backup = api.BackupStatus{Phase: "Failed", CaptureOperation: "capture",
-		CapturedAt: "2026-11-26T00:00:00Z", WithdrawAfterCapture: true, Withdrawn: true}
-	r, ctx := fixture(t, a)
-	if _, err := r.backup(ctx, a, nil, nil); err != nil {
+	if _, _, err := r.observeJob(ctx, a, a.Status.Backup.Publication); err != nil {
 		t.Fatal(err)
-	}
-	if a.Status.Backup.Phase != "Captured" || a.Status.Backup.CaptureOperation != "capture" ||
-		!a.Status.Backup.Withdrawn {
-		t.Fatal("publication retry replaced capture or withdrew withdrawal")
-	}
-	a.Status.Backup.Phase = "Published"
-	a.Status.Backup.PublishedAt = "2026-11-26T00:01:00Z"
-	if err := r.Status().Update(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	a.Annotations["paperless.bartl.sh/backup-request"] = "another"
-	if err := r.Update(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.backup(ctx, a, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if a.Status.Backup.Phase != "Published" || a.Status.Backup.CaptureOperation != "capture" {
-		t.Fatal("completed final capture admitted new source work")
-	}
-	a.Annotations["paperless.bartl.sh/withdraw-after-capture"] = "another"
-	if err := r.Update(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.backup(ctx, a, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if a.Status.Backup.Request != "another" || a.Status.Backup.LastManualRequest != "another" ||
-		a.Status.Backup.CaptureOperation != "capture" || a.Status.Backup.PublishedAt != "2026-11-26T00:01:00Z" {
-		t.Fatal("lost final acknowledgement did not recover the same published point")
-	}
-}
-
-func TestUnexpectedCaptureWithdrawalCannotCertifyCompletion(t *testing.T) {
-	r, ctx, a, p := captureFixture(t)
-	st := &NativeStatus{Execution: "execution", Capture: &CaptureObservation{
-		Operation: "capture", Execution: "execution", State: "Captured",
-		CapturedAt: "2026-11-26T00:00:00Z", Path: "/staging/captures/capture", Withdrawn: true}}
-	if _, err := r.backup(ctx, a, p, st); err != nil {
-		t.Fatal(err)
-	}
-	if a.Status.Failure == "" || a.Status.Backup.Phase != "Failed" {
-		t.Fatal("unrequested withdrawal was accepted as ordinary capture")
-	}
-}
-
-func TestWithdrawnSourceSurvivesReconciliationWithoutAppRestart(t *testing.T) {
-	a := applicationFixture()
-	controllerutil.AddFinalizer(a, finalizer)
-	a.Status.Identity, a.Status.Claims = &a.Spec.Identity, &a.Spec.Claims
-	a.Status.Backup = api.BackupStatus{Phase: "Published", WithdrawAfterCapture: true, Withdrawn: true}
-	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "paperless-native", Namespace: a.Namespace}}
-	r, ctx := fixture(t, a, sa)
-	for _, name := range claimNames(a.Spec.Claims) {
-		if err := r.Create(ctx, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
-			Name: name, Namespace: a.Namespace, Annotations: map[string]string{ownerAnnotation: string(a.UID)}}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	d := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "paperless", Namespace: a.Namespace},
-		Spec: appsv1.DeploymentSpec{Replicas: pointer(int32(1))}}
-	owner(t, r, a, d)
-	if err := r.Create(ctx, d); err != nil {
-		t.Fatal(err)
-	}
-	for range 3 {
-		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(a)}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(d), d); err != nil {
-		t.Fatal(err)
-	}
-	if *d.Spec.Replicas != 0 {
-		t.Fatal("withdrawn source application restarted")
-	}
-	fresh := &api.PaperlessApplication{}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(a), fresh); err != nil {
-		t.Fatal(err)
-	}
-	if fresh.Status.State != "WritesWithdrawn" || *fresh.Spec.Replicas != 1 {
-		t.Fatal("final withdrawal lost achieved state or overwrote runtime count")
-	}
-}
-
-func TestReplacementGateReceiptRequiresCurrentWithdrawalBinding(t *testing.T) {
-	for _, field := range []string{"valid", "application", "operation", "execution", "mode"} {
-		t.Run(field, func(t *testing.T) {
-			a := applicationFixture()
-			a.Status.Backup = api.BackupStatus{Phase: "Capturing", CaptureOperation: "capture",
-				Execution: "original-execution", WithdrawAfterCapture: true}
-			captured := &CaptureObservation{Operation: "capture", Execution: "original-execution",
-				State: "Captured", Path: "/staging/captures/capture", CapturedAt: "2026-11-26T00:00:00Z", Withdrawn: true}
-			uid := string(a.UID)
-			switch field {
-			case "application":
-				uid = "predecessor"
-			case "operation":
-				captured.Operation = "stale"
-			case "execution":
-				captured.Execution = "stale"
-			case "mode":
-				a.Status.Backup.WithdrawAfterCapture = false
-			}
-			message, err := json.Marshal(map[string]any{"state": "WritesWithdrawn", "applicationUID": uid, "capture": captured})
-			if err != nil {
-				t.Fatal(err)
-			}
-			p := &corev1.Pod{Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
-				Name: containerName, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
-				LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Message: string(message)}},
-			}}}}
-			receipt, err := completedWithdrawal(a, p)
-			if field == "valid" {
-				if err != nil || receipt == nil || !receipt.Withdrawn {
-					t.Fatalf("completed withdrawal became inaccessible after container replacement: %v", err)
-				}
-			} else if err == nil || receipt != nil {
-				t.Fatal("stale or unrequested withdrawal authorized publication")
-			}
-		})
-	}
-}
-
-func withdrawalFixture() *api.PaperlessApplication {
-	a := applicationFixture()
-	a.Status.Version = "3.3.1"
-	a.Status.PreparedVersion = "3.3.1"
-	a.Annotations = map[string]string{
-		cancelWithdrawalAnnotation:                  "final-capture",
-		"paperless.bartl.sh/backup-request":         "final-request",
-		"paperless.bartl.sh/withdraw-after-capture": "final-request",
-	}
-	a.Status.Backup = api.BackupStatus{
-		Phase: "Published", CaptureOperation: "final-capture", Execution: "original-execution",
-		CapturedAt: "2026-11-26T00:00:00Z", WithdrawAfterCapture: true, Withdrawn: true,
-		Request: "final-request", LastManualRequest: "final-request",
-	}
-	return a
-}
-
-func cancellationResult(a *api.PaperlessApplication) *api.NativeResult {
-	return &api.NativeResult{
-		ApplicationUID: string(a.UID), Operation: a.Status.Operation.ID,
-		State: "WithdrawalCancelled", Version: a.Status.Version,
-		CaptureOperation: a.Status.Backup.CaptureOperation, Execution: a.Status.Backup.Execution,
-		CapturedAt: a.Status.Backup.CapturedAt,
-	}
-}
-
-func TestWithdrawalCancellationAdmissionIsDurableAndCaptureBound(t *testing.T) {
-	a := withdrawalFixture()
-	r, ctx := fixture(t, a)
-	if _, err := r.cancelWithdrawal(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	op := a.Status.Operation
-	if op == nil || op.Kind != "cancel-withdrawal" || op.Mode != "final-capture" || !a.Status.Backup.Withdrawn {
-		t.Fatal("cancellation did not persist its bound admission before mutation")
-	}
-	fresh := &api.PaperlessApplication{}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(a), fresh); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if _, err := r.cancelWithdrawal(ctx, fresh); err != nil {
-			t.Fatal(err)
-		}
 	}
 	jobs := &batchv1.JobList{}
 	if err := r.List(ctx, jobs); err != nil {
 		t.Fatal(err)
 	}
-	if len(jobs.Items) != 1 || fresh.Status.Operation.ID != op.ID || !fresh.Status.Backup.Withdrawn {
-		t.Fatal("restart duplicated cancellation or reopened source before native completion")
-	}
-	pod := jobs.Items[0].Spec.Template.Spec
-	for _, e := range pod.Containers[0].Env {
-		if e.Name == "BARTL_PREPARE_MODE" && e.Value != "final-capture" {
-			t.Fatal("native cancellation lost capture binding")
-		}
+	if len(jobs.Items) != 1 || running(a) {
+		t.Fatal("publication did not remain independent of application run intent")
 	}
 }
 
-func TestWithdrawalCancellationNeverRepublishesOldFinalCapture(t *testing.T) {
-	a := withdrawalFixture()
-	// Cancellation also supports a complete point whose publication failed.
-	a.Status.Backup.Phase = "Failed"
-	a.Status.Operation = newOperation(a, "cancel-withdrawal", a.Status.Version, "final-capture")
-	a.Status.Operation.Phase = "Succeeded"
-	a.Status.Operation.Result = cancellationResult(a)
-	r, ctx := fixture(t, a)
-	if _, err := r.cancelWithdrawal(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	if a.Status.Backup.Withdrawn || a.Status.Backup.Phase != "Cancelled" ||
-		a.Status.Backup.CapturedAt != "" || a.Status.Backup.Publication != nil || a.Status.Operation != nil {
-		t.Fatal("completed cancellation retained old publication eligibility")
-	}
-	p := capturePod(a)
-	st := &NativeStatus{Execution: "new-execution", Ready: true}
-	if _, err := r.backup(ctx, a, p, st); err != nil {
-		t.Fatal(err)
-	}
-	if a.Status.Backup.Phase != "Cancelled" {
-		t.Fatal("old final request was automatically replayed")
-	}
-	a.Annotations["paperless.bartl.sh/backup-request"] = "new-request"
-	if err := r.Update(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.backup(ctx, a, p, st); err != nil {
-		t.Fatal(err)
-	}
-	if a.Status.Backup.Phase != "Admitting" || a.Status.Backup.CaptureOperation == "final-capture" ||
-		a.Status.Backup.WithdrawAfterCapture {
-		t.Fatal("subsequent source work reused stale final capture or withdrawal request")
-	}
-}
-
-func TestWithdrawalCancellationRejectsIncompleteAndAmbiguousCapture(t *testing.T) {
-	for _, defect := range []string{"boundary", "execution", "resumed", "phase", "failure"} {
-		t.Run(defect, func(t *testing.T) {
-			a := withdrawalFixture()
-			switch defect {
-			case "boundary":
-				a.Status.Backup.CapturedAt = ""
-			case "execution":
-				a.Status.Backup.Execution = ""
-			case "resumed":
-				a.Status.Backup.Resumed = true
-			case "phase":
-				a.Status.Backup.Phase = "Capturing"
-			case "failure":
-				a.Status.Failure = "uncertain capture"
-			}
-			r, ctx := fixture(t, a)
-			if _, err := r.cancelWithdrawal(ctx, a); err != nil {
-				t.Fatal(err)
-			}
-			if a.Status.Failure == "" || !a.Status.Backup.Withdrawn || a.Status.Operation != nil {
-				t.Fatal("ambiguous capture was repaired by cancellation")
-			}
-		})
-	}
-}
-
-func TestWithdrawalCancellationRejectsStaleCompletion(t *testing.T) {
-	for _, field := range []string{"capture", "execution", "operation", "application", "boundary"} {
-		t.Run(field, func(t *testing.T) {
-			a := withdrawalFixture()
-			a.Status.Operation = newOperation(a, "cancel-withdrawal", a.Status.Version, "final-capture")
-			a.Status.Operation.Phase = "Succeeded"
-			result := cancellationResult(a)
-			switch field {
-			case "capture":
-				result.CaptureOperation = "old"
-			case "execution":
-				result.Execution = "old"
-			case "operation":
-				result.Operation = "old"
-			case "application":
-				result.ApplicationUID = "old"
-			case "boundary":
-				result.CapturedAt = "old"
-			}
-			a.Status.Operation.Result = result
-			r, ctx := fixture(t, a)
-			if _, err := r.cancelWithdrawal(ctx, a); err != nil {
-				t.Fatal(err)
-			}
-			if a.Status.Failure == "" || !a.Status.Backup.Withdrawn {
-				t.Fatal("stale cancellation completion reopened source")
-			}
-		})
-	}
-}
-
-func TestWholeStopPreemptsEvenCompletedWithdrawalCancellation(t *testing.T) {
-	a := withdrawalFixture()
+func TestCompletedBackupRemainsOrdinarilyStoppedAndCanStart(t *testing.T) {
+	a := applicationFixture()
 	a.Spec.Running = pointer(false)
-	a.Status.Operation = newOperation(a, "cancel-withdrawal", a.Status.Version, "final-capture")
-	a.Status.Operation.Phase = "Succeeded"
-	a.Status.Operation.Result = cancellationResult(a)
+	a.Status.Backup = api.BackupStatus{Phase: "Published", CaptureOperation: "capture",
+		CapturedAt: "2026-11-26T00:00:00Z", PublishedAt: "2026-11-26T00:01:00Z"}
 	r, ctx := fixture(t, a)
 	for range 2 {
 		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(a)}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	fresh := &api.PaperlessApplication{}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(a), fresh); err != nil {
+	if err := r.Get(ctx, client.ObjectKeyFromObject(a), a); err != nil {
 		t.Fatal(err)
 	}
-	if !fresh.Status.Backup.Withdrawn || fresh.Status.Backup.Phase != "Published" || *fresh.Spec.Running {
-		t.Fatal("late cancellation completion overrode whole stop")
-	}
-}
-
-func TestCancellationWaitsForPublicationExecutionToEnd(t *testing.T) {
-	a := withdrawalFixture()
-	a.Status.Backup.Phase = "Publishing"
-	a.Status.Backup.Publication = newOperation(a, "publish", a.Status.Version, "")
-	r, ctx := fixture(t, a)
-	job := jobFor(a, a.Status.Backup.Publication)
-	owner(t, r, a, job)
-	if err := r.Create(ctx, job); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.cancelWithdrawal(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	if a.Status.Operation != nil || !a.Status.Backup.Withdrawn {
-		t.Fatal("cancellation raced active publication")
-	}
-	if _, err := r.cancelWithdrawal(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	if a.Status.Operation == nil || a.Status.Operation.Kind != "cancel-withdrawal" || a.Status.Backup.Publication != nil {
-		t.Fatal("confirmed publication termination did not admit cancellation")
-	}
-}
-
-func TestStaleCancellationRequestCannotCancelLaterWithdrawal(t *testing.T) {
-	a := withdrawalFixture()
-	a.Annotations[cancelWithdrawalAnnotation] = "previous-capture"
-	r, ctx := fixture(t, a)
-	if _, err := r.cancelWithdrawal(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	if a.Status.Operation != nil || !a.Status.Backup.Withdrawn || a.Status.Backup.Phase != "Published" {
-		t.Fatal("stale cancellation request affected a later final capture")
-	}
-}
-
-func TestConcurrentStopPreventsAcceptingCancellationResult(t *testing.T) {
-	a := withdrawalFixture()
-	a.Status.Operation = newOperation(a, "cancel-withdrawal", a.Status.Version, "final-capture")
-	a.Status.Operation.Phase = "Succeeded"
-	a.Status.Operation.Result = cancellationResult(a)
-	r, ctx := fixture(t, a)
-	current := &api.PaperlessApplication{}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(a), current); err != nil {
-		t.Fatal(err)
-	}
-	current.Spec.Running = pointer(false)
-	if err := r.Update(ctx, current); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.cancelWithdrawal(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	if !a.Status.Backup.Withdrawn || a.Status.Backup.Phase != "Published" {
-		t.Fatal("completion accepted after concurrent authority withdrawal")
-	}
-}
-
-func TestStopDuringCancellationDurablyRejectsLateCompletion(t *testing.T) {
-	a := withdrawalFixture()
-	a.Spec.Running = pointer(false)
-	a.Status.Operation = newOperation(a, "cancel-withdrawal", a.Status.Version, "final-capture")
-	a.Status.Operation.Phase = "Admitted"
-	r, ctx := fixture(t, a)
-	if _, err := r.stop(ctx, a, false); err != nil {
-		t.Fatal(err)
-	}
-	if a.Status.Operation.Phase != "Interrupted" || a.Status.Failure == "" {
-		t.Fatal("stop did not durably isolate uncertain cancellation")
+	if a.Status.Failure != "" || a.Status.State != "Stopped" || running(a) {
+		t.Fatalf("completed backup prevented ordinary stop: %#v", a.Status)
 	}
 	a.Spec.Running = pointer(true)
 	if err := r.Update(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	// A late result cannot remove the interrupted operation's sticky failure.
-	a.Status.Operation.Result = cancellationResult(a)
-	if err := r.Status().Update(ctx, a); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(a)}); err != nil {
 		t.Fatal(err)
 	}
-	fresh := &api.PaperlessApplication{}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(a), fresh); err != nil {
+	if err := r.Get(ctx, client.ObjectKeyFromObject(a), a); err != nil {
 		t.Fatal(err)
 	}
-	if !fresh.Status.Backup.Withdrawn || fresh.Status.Failure == "" || fresh.Status.Operation.Phase != "Interrupted" {
-		t.Fatal("restart or late completion reopened an interrupted cancellation")
+	if a.Status.Failure != "" || !running(a) || !controllerutil.ContainsFinalizer(a, finalizer) {
+		t.Fatal("explicit ordinary start required a separate unlock operation")
+	}
+}
+
+func TestBackupRequestCannotAwakenStoppedApplication(t *testing.T) {
+	a := applicationFixture()
+	a.Spec.Running = pointer(false)
+	a.Annotations = map[string]string{"paperless.bartl.sh/backup-request": "new"}
+	r, ctx := fixture(t, a)
+	for range 3 {
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(a)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(a), a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Status.State != "Stopped" || a.Status.Backup.Phase != "Failed" || a.Status.Failure != "" {
+		t.Fatalf("impossible backup started or damaged stopped application: %#v", a.Status)
+	}
+	jobs := &batchv1.JobList{}
+	if err := r.List(ctx, jobs); err != nil || len(jobs.Items) != 0 {
+		t.Fatal("stopped backup request created native work")
+	}
+}
+
+func TestStoppingCaptureWithNewRequestStillObservesOriginalExecution(t *testing.T) {
+	r, ctx, a, _ := captureFixture(t)
+	a.Spec.Running = pointer(false)
+	a.Annotations = map[string]string{"paperless.bartl.sh/backup-request": "later"}
+	if err := r.Update(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	a.Status.Backup.Phase = "Capturing"
+	a.Status.Backup.CapturedAt = "2026-11-26T00:00:00Z"
+	r.Executor = &lostResponseExecutor{Status: NativeStatus{
+		Execution: "execution", Failure: `{"state":"Capturing","operation":"capture","execution":"execution"}`,
+		Capture: &CaptureObservation{State: "Captured", Operation: "capture", Execution: "execution",
+			Path: "/staging/captures/capture", CapturedAt: a.Status.Backup.CapturedAt},
+	}}
+	pending, _, err := r.stoppingBackup(ctx, a)
+	if err != nil || !pending || a.Status.Backup.Phase != "Captured" || a.Status.Failure != "" {
+		t.Fatalf("mixed completion observation lost capture or failed source: %#v %v", a.Status, err)
+	}
+}
+
+func TestMissingCaptureProcessDoesNotPoisonIntactSource(t *testing.T) {
+	a := applicationFixture()
+	a.Spec.Running = pointer(false)
+	a.Status.Backup = api.BackupStatus{Phase: "Admitting", CaptureOperation: "not-started"}
+	r, ctx := fixture(t, a)
+	pending, _, err := r.stoppingBackup(ctx, a)
+	if err != nil || !pending || a.Status.Backup.Phase != "Failed" || a.Status.Failure != "" {
+		t.Fatalf("missing control execution became damaged application state: %#v %v", a.Status, err)
+	}
+	if _, err := r.stop(ctx, a, false); err != nil {
+		t.Fatal(err)
+	}
+	if a.Status.State != "Stopped" || a.Status.Failure != "" {
+		t.Fatal("failed backup prevented ordinary stop")
+	}
+}
+
+func TestCompletedCaptureResumptionErrorAfterRestartDoesNotFailSource(t *testing.T) {
+	r, ctx, a, p := captureFixture(t)
+	st := &NativeStatus{Execution: "replacement-execution", Ready: true, Capture: &CaptureObservation{
+		Operation: "capture", Execution: "execution", State: "Captured",
+		Path: "/staging/captures/capture", CapturedAt: "2026-11-26T00:00:00Z",
+		ResumptionError: "s6 resumption failed",
+	}}
+	if _, err := r.backup(ctx, a, p, st); err != nil {
+		t.Fatal(err)
+	}
+	if a.Status.Failure != "" || a.Status.Backup.Phase != "Failed" ||
+		a.Status.Backup.CapturedAt == "" || a.Status.Backup.ResumptionError != st.Capture.ResumptionError {
+		t.Fatalf("known complete point and healthy replacement became damaged source: %#v", a.Status)
 	}
 }

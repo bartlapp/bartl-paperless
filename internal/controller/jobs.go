@@ -51,8 +51,11 @@ func (r *Reconciler) observeJob(ctx context.Context, a *api.PaperlessApplication
 		if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(a), current); err != nil {
 			return false, nil, err
 		}
-		if current.UID != a.UID || !running(current) {
-			return false, nil, invalidOperation("run authority withdrawn before Job admission")
+		publication := op.Kind == "publish" && current.Status.Failure == "" &&
+			current.Status.Backup.CapturedAt != "" && current.Status.Backup.Publication != nil &&
+			current.Status.Backup.Publication.ID == op.ID
+		if current.UID != a.UID || current.DeletionTimestamp != nil || (!running(current) && !publication) {
+			return false, nil, invalidOperation("operation authority withdrawn before Job admission")
 		}
 		job = jobFor(a, op)
 		if err := controllerutil.SetControllerReference(a, job, r.Scheme); err != nil {

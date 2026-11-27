@@ -9,90 +9,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"strconv"
 	"time"
 )
-
-const cancelWithdrawalAnnotation = "paperless.bartl.sh/cancel-withdrawal"
-
-// Cancellation withdraws a completed point's finality, not an interrupted
-// capture's failure. The operator, not this package, excludes target effects.
-func (r *Reconciler) cancelWithdrawal(ctx context.Context, a *api.PaperlessApplication) (ctrl.Result, error) {
-	b := &a.Status.Backup
-	if !running(a) {
-		return r.stop(ctx, a, !a.DeletionTimestamp.IsZero())
-	}
-	if a.Status.Failure != "" || !b.Withdrawn || !b.WithdrawAfterCapture ||
-		b.CaptureOperation == "" || b.Execution == "" || b.CapturedAt == "" ||
-		b.Resumed || b.ResumptionError != "" ||
-		(b.Phase != "Captured" && b.Phase != "Publishing" && b.Phase != "Published" && b.Phase != "Failed") {
-		return r.fail(ctx, a, fmt.Errorf("withdrawal cancellation requires an intact completed final capture"))
-	}
-	op := a.Status.Operation
-	if op == nil || op.Kind != "cancel-withdrawal" {
-		if a.Annotations[cancelWithdrawalAnnotation] != b.CaptureOperation {
-			return r.save(ctx, a)
-		}
-		done, err := r.cancelActiveJobs(ctx, a)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if !done {
-			return r.save(ctx, a)
-		}
-		remember(a, b.Publication)
-		b.Publication = nil
-		b.Phase = "Captured"
-		remember(a, op)
-		a.Status.Operation = newOperation(a, "cancel-withdrawal", a.Status.Version, b.CaptureOperation)
-		return r.save(ctx, a)
-	}
-	if op.Mode != b.CaptureOperation || op.Version != a.Status.Version {
-		return r.fail(ctx, a, fmt.Errorf("withdrawal cancellation admission changed"))
-	}
-	done, result, err := r.observeJob(ctx, a, op)
-	if err != nil {
-		if permanentOperation(err) {
-			return r.fail(ctx, a, err)
-		}
-		return ctrl.Result{}, err
-	}
-	if !done {
-		return r.save(ctx, a)
-	}
-	if result.ApplicationUID != string(a.UID) || result.Operation != op.ID ||
-		result.State != "WithdrawalCancelled" || result.CaptureOperation != b.CaptureOperation ||
-		result.Execution != b.Execution || result.CapturedAt != b.CapturedAt || result.Version != a.Status.Version {
-		return r.fail(ctx, a, fmt.Errorf("invalid bound withdrawal cancellation result"))
-	}
-	// Recheck intent before accepting even a previously completed native result.
-	current := &api.PaperlessApplication{}
-	if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(a), current); err != nil {
-		return ctrl.Result{}, err
-	}
-	if current.UID != a.UID || !running(current) {
-		return ctrl.Result{Requeue: true}, nil
-	}
-	remember(a, op)
-	a.Status.Operation = nil
-	b.Withdrawn = false
-	b.WithdrawAfterCapture = false
-	b.Phase = "Cancelled"
-	b.Error = ""
-	// An unpublished old final capture must never be retried after source work.
-	// Its immutable bytes remain retained, but it is no longer publication input.
-	b.CapturedAt = ""
-	b.Publication = nil
-	b.LastManualRequest = a.Annotations["paperless.bartl.sh/backup-request"]
-	now := metav1.NewTime(time.Now())
-	b.ScheduleBaseline = &now
-	b.LastScheduleTime = nil
-	a.Status.State = "Starting"
-	condition(a, "Ready", metav1.ConditionFalse, "WithdrawalCancelled", "Final withdrawal cancelled; restarting intact source")
-	condition(a, "BackupFailed", metav1.ConditionFalse, "WithdrawalCancelled", "Cancelled final capture will not be republished")
-	return r.save(ctx, a)
-}
 
 func captureDeadline(a *api.PaperlessApplication) error {
 	admitted, err := time.Parse(time.RFC3339Nano, a.Status.Backup.AdmittedAt)
@@ -114,14 +33,11 @@ func completedCapture(a *api.PaperlessApplication, st *NativeStatus) bool {
 	b := &a.Status.Backup
 	if c == nil || c.State != "Captured" || c.Operation != b.CaptureOperation ||
 		c.Execution != b.Execution || c.Path != "/staging/captures/"+b.CaptureOperation ||
-		c.CapturedAt == "" || c.ResumptionError != "" {
+		c.CapturedAt == "" {
 		return false
 	}
-	if b.WithdrawAfterCapture {
-		return c.Withdrawn && !c.Resumed &&
-			(st.Failure == "" || expectedCaptureTransition(st.Failure, b.CaptureOperation, b.Execution))
-	}
-	return st.Failure == "" && c.Resumed && !c.Withdrawn
+	known := st.Failure == "" || expectedCaptureTransition(st.Failure, b.CaptureOperation, b.Execution)
+	return known && (c.Resumed || c.ResumptionError != "" || !running(a) || (st.Execution != "" && st.Execution != b.Execution))
 }
 
 func (r *Reconciler) backupFailure(ctx context.Context, a *api.PaperlessApplication, err error, isolate bool) (ctrl.Result, error) {
@@ -155,19 +71,15 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 				b.CapturedAt = c.CapturedAt
 				b.Resumed = c.Resumed
 				b.ResumptionError = c.ResumptionError
-				if c.Withdrawn && (!b.WithdrawAfterCapture || c.Resumed) {
-					return r.backupFailure(ctx, a, fmt.Errorf("capture withdrawal does not match admitted intent"), true)
-				}
 				if c.ResumptionError != "" {
-					return r.backupFailure(ctx, a, fmt.Errorf("native resumption failed: %s", c.ResumptionError), true)
+					return r.backupFailure(ctx, a, fmt.Errorf("native resumption failed after complete capture: %s", c.ResumptionError), false)
 				}
 				if !completedCapture(a, st) {
 					if err := captureDeadline(a); err != nil {
-						return r.backupFailure(ctx, a, err, true)
+						return r.backupFailure(ctx, a, err, false)
 					}
 					return r.save(ctx, a)
 				}
-				b.Withdrawn = c.Withdrawn
 				b.Phase = "Captured"
 				return r.save(ctx, a)
 			case "Capturing":
@@ -261,16 +173,6 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 		condition(a, "BackupFailed", metav1.ConditionFalse, "Published", "Capture completely published and verified")
 		return r.save(ctx, a)
 	}
-	if b.Withdrawn && b.Phase == "Published" {
-		// Repeating final withdrawal after a lost acknowledgement returns the
-		// same point: no source writes or new capture have occurred since it.
-		request := a.Annotations["paperless.bartl.sh/backup-request"]
-		if request != "" && a.Annotations["paperless.bartl.sh/withdraw-after-capture"] == request {
-			b.Request = request
-			b.LastManualRequest = request
-		}
-		return r.save(ctx, a)
-	}
 	// Manual and scheduled requests converge here; no second capture dispatcher.
 	request := ""
 	manualRequest := a.Annotations["paperless.bartl.sh/backup-request"]
@@ -283,7 +185,7 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 		v := metav1.NewTime(now)
 		b.ScheduleBaseline = &v
 	}
-	if request == "" && !b.Withdrawn && a.Spec.Backup.Schedule != "" {
+	if request == "" && running(a) && a.Spec.Backup.Schedule != "" {
 		s, err := schedule(a)
 		if err != nil {
 			return r.backupFailure(ctx, a, err, false)
@@ -323,8 +225,6 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 	remember(a, b.Publication)
 	b.Resumed = false
 	b.ResumptionError = ""
-	b.WithdrawAfterCapture = a.Annotations["paperless.bartl.sh/withdraw-after-capture"] == request
-	b.Withdrawn = false
 	b.Request = request
 	b.CaptureOperation = uuid.NewString()
 	b.AdmittedAt = now.UTC().Format(time.RFC3339Nano)
@@ -341,4 +241,47 @@ func (r *Reconciler) backup(ctx context.Context, a *api.PaperlessApplication, p 
 	b.Publication = nil
 	condition(a, "BackupFailed", metav1.ConditionFalse, "CaptureAdmitted", "One capture operation admitted")
 	return r.save(ctx, a)
+}
+
+// An explicit backup request and ordinary stop can be submitted together.
+// Finish the admitted capture/publication without restarting any workload.
+func (r *Reconciler) stoppingBackup(ctx context.Context, a *api.PaperlessApplication) (bool, ctrl.Result, error) {
+	b := &a.Status.Backup
+	active := b.Phase == "Admitting" || b.Phase == "Capturing"
+	publication := b.Phase == "Captured" || b.Phase == "Publishing"
+	request := a.Annotations["paperless.bartl.sh/backup-request"]
+	requested := request != "" && request != b.LastManualRequest
+	if !active && !publication && !requested {
+		return false, ctrl.Result{}, nil
+	}
+	condition(a, "Ready", metav1.ConditionFalse, "Stopping", "Finishing requested backup before ordinary stop")
+	condition(a, "Stopped", metav1.ConditionFalse, "BackupDraining", "Waiting for capture and publication to finish")
+	if publication || (!active && requested && b.CapturedAt != "" && b.PublishedAt == "") {
+		result, err := r.backup(ctx, a, nil, nil)
+		return true, result, err
+	}
+	pod, err := r.liveAppPod(ctx, a)
+	if err != nil {
+		return true, ctrl.Result{}, err
+	}
+	if pod == nil || containerID(pod) == "" {
+		if active {
+			result, err := r.backupFailure(ctx, a, fmt.Errorf("capture execution ended before its outcome was established"), false)
+			return true, result, err
+		}
+		b.Request, b.LastManualRequest = request, request
+		result, err := r.backupFailure(ctx, a, fmt.Errorf("capture requires an existing running application; stop will not start it"), false)
+		return true, result, err
+	}
+	st, err := r.readStatus(ctx, a, pod)
+	if err != nil {
+		return true, ctrl.Result{}, err
+	}
+	if !active && (!st.Ready || !podReady(pod) || st.Failure != "") {
+		b.Request, b.LastManualRequest = request, request
+		result, err := r.backupFailure(ctx, a, fmt.Errorf("capture requires confirmed native readiness; stop will not start it"), false)
+		return true, result, err
+	}
+	result, err := r.backup(ctx, a, pod, st)
+	return true, result, err
 }

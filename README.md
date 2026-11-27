@@ -4,6 +4,8 @@ Paperless over HTTPS with PostgreSQL, Redis, automatic initialization/reconstruc
 
 New deployment: follow the steps below. Existing deployment: [resume access](#resume-an-existing-deployment), then select an operation. Use workstation Bash, keep tracing off and stop at a failed command. Creation is not a replay or partial-state repair program.
 
+This checkout contains an unqualified source change after candidate `0.3.0-dev.7`: final capture now uses ordinary stop intent instead of withdrawal/cancellation state. The retained dev.7 chart/image pins do not implement these changed procedures. Build and pin a new immutable candidate before executing this checkout's instructions; use dev.7's retained README only with dev.7.
+
 - [Install](#package-and-target), [resume](#resume-an-existing-deployment) and [operate](#stop-start-and-restart)
 - [Capture](#capture-publication-and-retry), [recover and update by replacement](#recovery-and-replacement-upgrade)
 - [Remove](#remove-the-release)
@@ -528,7 +530,7 @@ Continue with the selected operation.
 
 ## Capture, publication and retry
 
-Load [retained context](#load-retained-context) only; no chart preparation is needed. Start from a running application with backup already configured and sufficient staging. Do not stop Paperless first: capture needs its current writer execution. Let the controller drain intake/processing and stop writers throughout database and file capture:
+Load [retained context](#load-retained-context) only; no chart preparation is needed. Start with an existing running application, backup configured and sufficient staging. Ordinary capture resumes writers when run intent permits it. For a final point followed by ordinary stop, use the atomic request in [Final capture and source stop](#final-capture-and-source-stop).
 
 ```bash
 REQUEST="manual-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -570,13 +572,13 @@ Load [retained context](#load-retained-context) only. None of these operations d
 
 ### Stop
 
-Retain failure diagnostics before cancellation. Whole-application stop withdraws access, ends application/finite work and then stops dedicated PostgreSQL and Redis. It retains data, credentials and the selected replica count; the controller stays available.
+Whole-application stop withdraws access, finishes an explicitly requested or already admitted capture/publication without resuming writers, then stops dedicated PostgreSQL and Redis. It retains data, credentials and the selected replica count; the controller stays available. With no pending backup, stop proceeds directly. A backup failure remains visible and does not become a successful recovery point. Stop never starts a stopped application merely to satisfy a backup request.
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" patch paperlessapplication/paperless \
   --type=merge -p '{"spec":{"running":false}}'
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for=condition=Stopped --timeout=30m
+  --for=condition=Stopped --timeout=7h
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication,pods,jobs,deployments,replicasets
 ```
 
@@ -640,9 +642,9 @@ MATCHING_PACKAGE=$(yq -o=json '.packages // {}' "$VALUES" |
 if [ -n "$MATCHING_PACKAGE" ]; then TARGET_PACKAGE="$MATCHING_PACKAGE"; fi
 ```
 
-### Final capture and source withdrawal
+### Final capture and source stop
 
-Use this procedure with the selected format-2 package. It keeps the intact source withdrawn while the operator prepares and reviews the independent target. Ordinary stop/start does not cancel final withdrawal. Historical export-only packages are not supported sources for this complete-state reconstruction path.
+This source procedure uses the ordinary runtime stop field and ordinary backup request in one API update. There is no persistent withdrawal gate or cancellation operation. Keep the source installed until the target is accepted; old export-only backups remain unsupported by the complete-state path.
 
 For a reachable source, load its retained context and [prepare the chart-backed operation](#prepare-a-chart-backed-operation), then withdraw all intake paths and prevent concurrent publication/configuration changes. Keep its writer execution running for final capture. Disable public ingress and schedules, then capture:
 
@@ -665,33 +667,31 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o
     any(.status.conditions[]; .type == "Ready" and .status == "True" and .observedGeneration == $g)'
 ```
 
-Let already admitted capture/publication finish. The final request below settles work and captures it **without resuming native writers**, including scheduler/consumer/worker activity. The controller removes the idle application Pod and publishes the protected point with database/broker still available. An older retained ordinary capture may be published first; its receipt lacks `withdrawn: true`. In that case keep intake closed and repeat this request block once to create the final withdrawn point. Retrying publication of an already withdrawn point is valid: no new source work has been admitted since that capture.
+First settle any existing capture/publication, including publication retry of an older retained point, through the ordinary backup procedure while the source remains running. Then submit the final backup request and stop intent together. Capture runs only in the already-existing application execution, keeps native writers closed after the consistent point and publishes it before the ordinary stop completes. The request must not be split into two API calls: an ordinary capture could otherwise resume writers before stop is requested.
 
-If the publication acknowledgement or shell session is lost, repeat the same final-request block. An already-published withdrawn source acknowledges its retained point without creating another capture or admitting writers; capture and publication timestamps remain unchanged.
+If acknowledgement is lost, inspect the live request, capture boundary and phase before doing anything else. Keep the same request identity while observing its result. Do not start the source or submit a different capture merely because a client wait timed out.
 
 ```bash
 REQUEST="final-$(openssl rand -hex 8)"
-kubectl --context "$KUBE_CONTEXT" -n "$NS" annotate paperlessapplication/paperless \
-  "paperless.bartl.sh/backup-request=$REQUEST" \
-  "paperless.bartl.sh/withdraw-after-capture=$REQUEST" --overwrite
+kubectl --context "$KUBE_CONTEXT" -n "$NS" patch paperlessapplication/paperless --type=merge \
+  -p "$(jq -nc --arg request "$REQUEST" \
+    '{metadata:{annotations:{"paperless.bartl.sh/backup-request":$request}},spec:{running:false}}')"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
   --for="jsonpath={.status.backup.request}=$REQUEST" --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
   --for=jsonpath='{.status.backup.phase}'=Published --timeout=6h -o json > "$INSTALL_DIR/backup-result.json"
 jq -e --arg request "$REQUEST" '.status.backup |
   .request == $request and .phase == "Published" and
-  .withdrawAfterCapture == true and .withdrawn == true and .resumed != true and
+  .resumed != true and
   (.captureOperation | length > 0) and
   (.snapshotID | test("^[a-f0-9]{64}$"))' "$INSTALL_DIR/backup-result.json"
 ```
 
-`WritesWithdrawn` is not Ready and is not whole-application Stopped. Normal backup publication failure permits healthy resumption; this explicitly withdrawn source remains closed even if publication fails. Correct publication access and repeat the request to publish the retained point. Final withdrawal survives controller/component restart. Keep the source installation and its claims intact until the switch is accepted or explicitly cancelled; do not delete native markers, adopt old storage or uninstall it merely to keep writers closed. Interrupted or uncertain native capture remains failed; only a completely published point is eligible for reconstruction.
+Require this completed point and any required secondary protection. A publication failure retains the point and leaves ordinary stop intent intact. A new ordinary backup request can retry its publication while stopped; it must not start application writers. Failed or uncertain capture is not a usable point and remains visible. A completed backup does not create a separate startup lock.
 
-Require final capture inclusion and any required secondary protection. Then stop the source, retaining its controller and application resource:
+Wait for the already requested ordinary stop, retaining the controller and application resource:
 
 ```bash
-kubectl --context "$KUBE_CONTEXT" -n "$NS" patch paperlessapplication/paperless \
-  --type=merge -p '{"spec":{"running":false}}'
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless --for=condition=Stopped --timeout=30m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
@@ -700,29 +700,24 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs,deployments,replicasets
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc -o json > "$SOURCE_DIR/source-pvc.json"
 ```
 
-Require no source application, database, broker or native-Job Pods, including terminating Pods. The retained native withdrawal gate prevents writer admission even if ordinary start is requested or a component/controller restarts. Direct and stale-address requests must fail before target activation. For an unavailable source, enforce withdrawal independently before activation; DNS or unreachability is insufficient.
+Require no source application, database, broker or native-Job Pods, including terminating Pods. Ordinary stopped intent survives controller/component restart. Direct and stale-address requests must fail before target activation. For an unavailable source, enforce withdrawal independently before activation; DNS or unreachability is insufficient.
 
 For a lost source, select `SOURCE_DEPLOYMENT` and the independently recovered `SOURCE_DIR` without contacting it. Retain the original `backup.schedule` in `"$SOURCE_DIR/backup-schedule-before-operation"`; do not overwrite an existing interrupted operation's saved value with the temporarily empty schedule.
 
-### Cancel a switch before production activation
+### Abandon a switch before production activation
 
-Cancellation is an explicit operator decision, never automatic fallback. First establish that the target has not accepted production work or caused production effects and cannot do so while the source resumes. Stop any prepared target through its whole-application stop procedure and confirm termination. If production effects may have occurred, do not use this cancellation procedure; keep the source withdrawn and reconcile authority and data before deciding how to recover. The package does not inspect another installation.
+First establish that the target has not accepted production work or caused production effects and cannot do so while the source resumes. Stop any prepared target and confirm termination. If production effects may have occurred, keep the source stopped and reconcile authority and data before deciding how to recover. The package does not inspect another installation.
 
-Load the intact source's retained context. Its completed withdrawal remains closed while restoring ordinary run intent. Bind cancellation to that source's current capture:
+Load the intact source's retained context and use ordinary start:
 
 ```bash
-CAPTURE=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get paperlessapplication/paperless \
-  -o jsonpath='{.status.backup.captureOperation}')
-test -n "$CAPTURE"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" patch paperlessapplication/paperless \
-  --type=merge -p '{"spec":{"running":true,"replicas":1}}'
-kubectl --context "$KUBE_CONTEXT" -n "$NS" annotate paperlessapplication/paperless \
-  "paperless.bartl.sh/cancel-withdrawal=$CAPTURE" --overwrite
+  --type=merge -p '{"spec":{"running":true}}'
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait paperlessapplication/paperless \
-  --for=condition=Ready --timeout=10m
+  --for=condition=Ready --timeout=30m
 ```
 
-Verify native health and the intact library before deliberately restoring source routing and its retained schedule through the static-configuration procedure. Cancellation does not enable ingress or select the production route. It neither repairs incomplete captures nor automatically retries interrupted native mutations. The old final point remains retained, but is not republished as a current final capture after source work resumes. A later switch requires a new final capture.
+Verify native health and the intact library before restoring source routing and the saved schedule. Start does not enable ingress or select the production route. It does not repair a genuinely incomplete restore/migration. The old point remains a historical backup, not proof of later source work; a later switch requires a new final capture.
 
 After confirming that the source's intended route and saved schedule are restored, remove this operation's temporary schedule input so a later switch records the then-current schedule:
 
@@ -1103,7 +1098,7 @@ node tests/pending-uploads.mjs pending /protected/pending-inputs.json
 node tests/pending-uploads.mjs verify /protected/pending-inputs.json
 ```
 
-Use the supplied CA bundle through `NODE_EXTRA_CA_CERTS` when needed. The verifier waits up to 3,900 seconds by default, allowing native Redis redelivery after an interrupted worker; it neither shortens native visibility timeouts nor republishes tasks. Retain task, broker and scratch diagnostics when work is interrupted. Also initiate capture during known active/pending ingestion: require either completed consistent work or visible refusal with inputs retained. Verify final withdrawal through component/controller restart, explicitly permitted cancellation without state repair, and a new usable capture after resumed work.
+Use the supplied CA bundle through `NODE_EXTRA_CA_CERTS` when needed. The verifier waits up to 3,900 seconds by default, allowing native Redis redelivery after an interrupted worker; it neither shortens native visibility timeouts nor republishes tasks. Retain task, broker and scratch diagnostics when work is interrupted. Also initiate capture during known active/pending ingestion: require either completed consistent work or visible refusal with inputs retained. Verify atomic backup plus ordinary stop, no post-capture writer resumption, publication retry without starting the source, stop persistence across controller restart, ordinary explicit start and a new usable point after resumed work.
 
 For the repeatable fixture, start with an empty disposable library and a provisioned non-administrator native user (local or selected OIDC). The preparer creates a reader group, a denied user without document grants, a document-added assignment workflow and a synthetic root with a second file version. It retains originals and native archive PDF renditions separately; it does not alter startup or capture.
 

@@ -71,39 +71,35 @@ type Operation struct {
 	Result     *NativeResult `json:"result,omitempty"`
 }
 type NativeResult struct {
-	ApplicationUID   string `json:"applicationUID,omitempty"`
-	Operation        string `json:"operation"`
-	State            string `json:"state"`
-	Version          string `json:"version,omitempty"`
-	RepositoryID     string `json:"repositoryID,omitempty"`
-	SnapshotID       string `json:"snapshotID,omitempty"`
-	CapturedAt       string `json:"capturedAt,omitempty"`
-	PublishedAt      string `json:"publishedAt,omitempty"`
-	CaptureOperation string `json:"captureOperation,omitempty"`
-	Execution        string `json:"execution,omitempty"`
+	ApplicationUID string `json:"applicationUID,omitempty"`
+	Operation      string `json:"operation"`
+	State          string `json:"state"`
+	Version        string `json:"version,omitempty"`
+	RepositoryID   string `json:"repositoryID,omitempty"`
+	SnapshotID     string `json:"snapshotID,omitempty"`
+	CapturedAt     string `json:"capturedAt,omitempty"`
+	PublishedAt    string `json:"publishedAt,omitempty"`
 }
 type BackupStatus struct {
-	LastManualRequest    string       `json:"lastManualRequest,omitempty"`
-	Resumed              bool         `json:"resumed,omitempty"`
-	WithdrawAfterCapture bool         `json:"withdrawAfterCapture,omitempty"`
-	Withdrawn            bool         `json:"withdrawn,omitempty"`
-	ResumptionError      string       `json:"resumptionError,omitempty"`
-	Request              string       `json:"request,omitempty"`
-	Phase                string       `json:"phase,omitempty"`
-	CaptureOperation     string       `json:"captureOperation,omitempty"`
-	AdmittedAt           string       `json:"admittedAt,omitempty"`
-	PodName              string       `json:"podName,omitempty"`
-	PodUID               string       `json:"podUID,omitempty"`
-	ContainerID          string       `json:"containerID,omitempty"`
-	Execution            string       `json:"execution,omitempty"`
-	CapturedAt           string       `json:"capturedAt,omitempty"`
-	PublishedAt          string       `json:"publishedAt,omitempty"`
-	RepositoryID         string       `json:"repositoryID,omitempty"`
-	SnapshotID           string       `json:"snapshotID,omitempty"`
-	Error                string       `json:"error,omitempty"`
-	Publication          *Operation   `json:"publication,omitempty"`
-	LastScheduleTime     *metav1.Time `json:"lastScheduleTime,omitempty"`
-	ScheduleBaseline     *metav1.Time `json:"scheduleBaseline,omitempty"`
+	LastManualRequest string       `json:"lastManualRequest,omitempty"`
+	Resumed           bool         `json:"resumed,omitempty"`
+	ResumptionError   string       `json:"resumptionError,omitempty"`
+	Request           string       `json:"request,omitempty"`
+	Phase             string       `json:"phase,omitempty"`
+	CaptureOperation  string       `json:"captureOperation,omitempty"`
+	AdmittedAt        string       `json:"admittedAt,omitempty"`
+	PodName           string       `json:"podName,omitempty"`
+	PodUID            string       `json:"podUID,omitempty"`
+	ContainerID       string       `json:"containerID,omitempty"`
+	Execution         string       `json:"execution,omitempty"`
+	CapturedAt        string       `json:"capturedAt,omitempty"`
+	PublishedAt       string       `json:"publishedAt,omitempty"`
+	RepositoryID      string       `json:"repositoryID,omitempty"`
+	SnapshotID        string       `json:"snapshotID,omitempty"`
+	Error             string       `json:"error,omitempty"`
+	Publication       *Operation   `json:"publication,omitempty"`
+	LastScheduleTime  *metav1.Time `json:"lastScheduleTime,omitempty"`
+	ScheduleBaseline  *metav1.Time `json:"scheduleBaseline,omitempty"`
 }
 type PaperlessApplicationStatus struct {
 	Operations         []Operation        `json:"operations,omitempty"`

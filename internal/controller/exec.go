@@ -50,7 +50,6 @@ type CaptureObservation struct {
 	StartedAt       string `json:"startedAt"`
 	CapturedAt      string `json:"capturedAt"`
 	Resumed         bool   `json:"resumed"`
-	Withdrawn       bool   `json:"withdrawn"`
 	ResumptionError string `json:"resumptionError"`
 }
 type NativeStatus struct {
@@ -127,7 +126,8 @@ func (r *Reconciler) captureAuthority(ctx context.Context, a *api.PaperlessAppli
 	if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(a), live); err != nil {
 		return err
 	}
-	if live.UID != a.UID || !running(live) || live.Generation != a.Generation {
+	if live.UID != a.UID || live.DeletionTimestamp != nil || live.Status.Failure != "" ||
+		live.Generation != a.Generation || live.Status.Backup.CaptureOperation != a.Status.Backup.CaptureOperation {
 		return fmt.Errorf("current application no longer authorizes this capture")
 	}
 	for _, name := range claimNames(a.Spec.Claims) {
@@ -194,9 +194,6 @@ func gateFailure(a *api.PaperlessApplication, p *corev1.Pod) error {
 				ApplicationUID string `json:"applicationUID"`
 			}
 			if json.Unmarshal([]byte(term.Message), &diagnostic) == nil && diagnostic.ApplicationUID == string(a.UID) {
-				if diagnostic.State == "WritesWithdrawn" {
-					return fmt.Errorf("native source writes remain withdrawn without a matching capture admission")
-				}
 				if diagnostic.State == "Failed" && diagnostic.Sticky {
 					return fmt.Errorf("native startup gate failed: %s", diagnostic.Error)
 				}
@@ -215,34 +212,4 @@ func expectedCaptureTransition(message, operation, execution string) bool {
 		return false
 	}
 	return marker.Operation == operation && marker.Execution == execution && (marker.State == "Capturing" || marker.State == "Captured")
-}
-
-// While final withdrawal is active, a replacement container cannot resume its
-// writers. Its gate exposes the verified durable receipt through the existing
-// termination boundary, bound to this application and admitted operation.
-func completedWithdrawal(a *api.PaperlessApplication, p *corev1.Pod) (*CaptureObservation, error) {
-	for _, container := range p.Status.ContainerStatuses {
-		if container.Name != containerName {
-			continue
-		}
-		for _, term := range []*corev1.ContainerStateTerminated{container.State.Terminated, container.LastTerminationState.Terminated} {
-			if term == nil {
-				continue
-			}
-			var receipt struct {
-				State          string              `json:"state"`
-				ApplicationUID string              `json:"applicationUID"`
-				Capture        *CaptureObservation `json:"capture"`
-			}
-			if json.Unmarshal([]byte(term.Message), &receipt) != nil || receipt.State != "WritesWithdrawn" {
-				continue
-			}
-			if receipt.ApplicationUID != string(a.UID) || !a.Status.Backup.WithdrawAfterCapture ||
-				!completedCapture(a, &NativeStatus{Capture: receipt.Capture}) {
-				return nil, invalidOperation("withdrawal receipt does not match current capture admission")
-			}
-			return receipt.Capture, nil
-		}
-	}
-	return nil, nil
 }

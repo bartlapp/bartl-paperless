@@ -123,13 +123,27 @@ def api(path):
         return json.load(response)
 
 
-def authority(execution=None):
+def authority(execution=None, capture_operation=None, publication=None):
     ns, name = required('BARTL_NAMESPACE'), required('BARTL_NAME')
     app = api(f'/apis/paperless.bartl.sh/v1alpha2/namespaces/{ns}/paperlessapplications/{name}')
     if (app['metadata']['uid'] != required('BARTL_UID') or app['metadata'].get('deletionTimestamp')
-            or app['spec']['running'] is not True or app['spec']['replicas'] != 1
             or app['spec']['identity'] != identity()
             or app.get('status', {}).get('failure')):
+        raise RuntimeError('Running authority withdrawn')
+    if capture_operation is not None:
+        admitted = app.get('status', {}).get('backup', {})
+        if (admitted.get('captureOperation') != capture_operation
+                or admitted.get('execution') != execution
+                or admitted.get('podUID') != required('BARTL_POD_UID')
+                or admitted.get('phase') not in ('Admitting', 'Capturing', 'Captured', 'Publishing', 'Published')):
+            raise RuntimeError('Capture authority withdrawn')
+    elif publication is not None:
+        backup = app.get('status', {}).get('backup', {})
+        if (backup.get('captureOperation') != publication or not backup.get('capturedAt')
+                or backup.get('phase') != 'Publishing'
+                or backup.get('publication', {}).get('id') != required('BARTL_OPERATION')):
+            raise RuntimeError('Publication authority withdrawn')
+    elif app['spec']['running'] is not True or app['spec']['replicas'] != 1:
         raise RuntimeError('Running authority withdrawn')
     for claim in app['spec']['claims'].values():
         pvc = api(f'/api/v1/namespaces/{ns}/persistentvolumeclaims/{claim}')
@@ -383,97 +397,7 @@ def prepare(migration=False):
         return result({'state': 'Prepared', 'version': version()})
 
 
-def withdrawal_receipt():
-    captured = load(STATE / 'capture.json')
-    if not captured or captured.get('state') != 'Captured' or not captured.get('withdrawn'):
-        return None
-    marker = load(STATE / 'transition.json')
-    operation, execution = captured.get('operation', ''), captured.get('execution', '')
-    if (not OP.fullmatch(operation) or not execution or captured.get('resumed')
-            or captured.get('resumptionError') or not captured.get('withdrawAfterCapture')
-            or not marker or marker.get('state') != 'Captured' or marker.get('operation') != operation
-            or marker.get('execution') != execution or not marker.get('withdrawn')
-            or captured.get('path') != str(STAGING / 'captures' / operation)):
-        raise RuntimeError('Completed withdrawal binding is invalid')
-    # Capture wrote this receipt only after verification. Publication rechecks
-    # all bytes; observing a closed gate need not rehash the entire point.
-    manifest = load(Path(captured['path']) / 'bartl-manifest.json')
-    if (not manifest or manifest.get('format') != 2 or manifest.get('identity') != identity()
-            or manifest.get('operation') != operation or manifest.get('execution') != execution
-            or manifest.get('capturedAt') != captured.get('capturedAt')
-            or manifest.get('version') != version()):
-        raise RuntimeError('Completed withdrawal does not match its capture')
-    return captured
-
-
-def cancel_withdrawal():
-    with exclusive():
-        app = authority()
-        operation = required('BARTL_OPERATION')
-        capture_operation = required('BARTL_PREPARE_MODE')
-        admitted = app.get('status', {}).get('operation', {})
-        backup = app.get('status', {}).get('backup', {})
-        if (not OP.fullmatch(operation) or not OP.fullmatch(capture_operation)
-                or admitted.get('id') != operation or admitted.get('kind') != 'cancel-withdrawal'
-                or admitted.get('mode') != capture_operation
-                or backup.get('captureOperation') != capture_operation or not backup.get('withdrawn')):
-            raise RuntimeError('Withdrawal cancellation no longer has current admission')
-        cancellation_path = STATE / 'cancellations' / (capture_operation + '.json')
-        cancelled = load(cancellation_path)
-        captured = load(STATE / 'capture.json')
-        if cancelled:
-            if (cancelled.get('operation') != operation
-                    or cancelled.get('state') != 'WithdrawalCancelled'
-                    or cancelled.get('version') != version()
-                    or cancelled.get('applicationUID') != required('BARTL_UID')
-                    or cancelled.get('captureOperation') != capture_operation
-                    or cancelled.get('execution') != backup.get('execution')
-                    or not captured or captured.get('operation') != capture_operation
-                    or captured.get('execution') != cancelled['execution']
-                    or captured.get('capturedAt') != cancelled.get('capturedAt')
-                    or captured.get('state') not in ('Captured', 'Cancelled')):
-                raise RuntimeError('Withdrawal cancellation binding is invalid')
-        else:
-            captured = withdrawal_receipt()
-            if (not captured or captured['operation'] != capture_operation
-                    or captured['execution'] != backup.get('execution')):
-                raise RuntimeError('Cancellation requires a completed bound withdrawal')
-            verify_capture(captured['path'])
-            cancelled = {'state': 'WithdrawalCancelled', 'operation': operation,
-                         'applicationUID': required('BARTL_UID'), 'captureOperation': capture_operation,
-                         'execution': captured['execution'], 'version': version(),
-                         'capturedAt': captured['capturedAt']}
-            save(cancellation_path, cancelled)
-        marker = load(STATE / 'transition.json')
-        if marker and (marker.get('state') != 'Captured'
-                       or marker.get('operation') != capture_operation
-                       or marker.get('execution') != cancelled['execution'] or not marker.get('withdrawn')):
-            raise RuntimeError('Cancellation cannot repair an incomplete native transition')
-        # Receipt first, then invalidate stale capture completion, then release
-        # only this completed gate. A crash at any point is idempotently resumable.
-        captured.update(state='Cancelled', withdrawn=False, cancellationOperation=operation)
-        save(STATE / 'capture.json', captured)
-        if marker:
-            (STATE / 'transition.json').unlink()
-            fd = os.open(STATE, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-        return result(cancelled)
-
-
 def gate():
-    # Observation only: no writer admission or mutation. A completed final
-    # point remains publishable if this container replaced its capture
-    # execution before the controller observed the durable receipt.
-    captured = withdrawal_receipt()
-    if captured:
-        receipt = {'state': 'WritesWithdrawn', 'applicationUID': required('BARTL_UID'),
-                   'capture': captured}
-        Path('/dev/termination-log').write_text(json.dumps(receipt))
-        print(json.dumps(receipt), flush=True)
-        raise SystemExit(1)
     with exclusive():
         authority()
         # Recreate orders upgrades, but not replacement after ordinary Pod deletion.
@@ -483,6 +407,15 @@ def gate():
         pods = api(f'/api/v1/namespaces/{required("BARTL_NAMESPACE")}/pods?{selector}')
         if any(p['metadata']['uid'] != required('BARTL_POD_UID') for p in pods['items']):
             raise BlockingIOError('Previous application Pod has not retired; retry native admission')
+        marker = load(STATE / 'transition.json')
+        captured = load(STATE / 'capture.json')
+        if (marker and marker.get('state') == 'Capturing' and captured
+                and captured.get('state') == 'Captured'
+                and captured.get('operation') == marker.get('operation')
+                and captured.get('execution') == marker.get('execution')
+                and captured.get('path') == str(STAGING / 'captures' / captured['operation'])):
+            verify_capture(captured['path'])
+            (STATE / 'transition.json').unlink()
         observed = observe()
         if observed != {'state': 'Existing', 'version': version()}:
             raise RuntimeError('Native startup requires successful current-version preparation')
@@ -591,11 +524,11 @@ def capture(operation, execution, seconds):
                 or current['operation'] != operation or current['execution'] != execution):
             raise RuntimeError('Capture admission changed')
         try:
-            authority(execution)
+            authority(execution, operation)
             s6(False, SERVICES[:3])
             deadline = time.monotonic() + seconds
             while not settled():
-                authority(execution)
+                authority(execution, operation)
                 if time.monotonic() >= deadline:
                     raise RuntimeError('Drain deadline exceeded; queues were not purged')
                 time.sleep(1)
@@ -617,11 +550,11 @@ def capture(operation, execution, seconds):
                         "AND backend_type='client backend')").fetchone()[0]
                 if not clients:
                     break
-                authority(execution)
+                authority(execution, operation)
                 if time.monotonic() >= deadline:
                     raise RuntimeError('Drain deadline exceeded with PostgreSQL sessions still present')
                 time.sleep(1)
-            authority(execution)
+            authority(execution, operation)
             assert_settled_state()
             directory = STAGING / 'captures' / operation
             directory.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -654,23 +587,17 @@ def capture(operation, execution, seconds):
             verify_capture(directory)
             current.update(state='Captured', path=str(directory), resumed=False)
             save(STATE / 'capture.json', current)
-            if current['withdrawAfterCapture']:
-                # Final capture ends source write authority, not just intake.
-                # Preserve the gate across Pod/controller restarts until retirement.
-                current['withdrawn'] = True
-                save(STATE / 'transition.json', current)
-            else:
-                try:
-                    authority(execution)
+            # Capture did not mutate application data. Once the complete point
+            # is verified, ordinary startup must not require an unlock procedure.
+            (STATE / 'transition.json').unlink()
+            try:
+                app = authority(execution, operation)
+                if app['spec']['running'] is True and app['spec']['replicas'] == 1:
                     s6(True, SERVICES)
                     current['resumed'] = True
-                except Exception as error:
-                    current['resumptionError'] = str(error)
+            except Exception as error:
+                current['resumptionError'] = str(error)
             save(STATE / 'capture.json', current)
-            # Startup and controller completion use the same durable boundary.
-            # Failed or interrupted resumption must survive CR removal/reinstall.
-            if current['resumed']:
-                (STATE / 'transition.json').unlink()
         except Exception as error:
             current.update(state='Failed', error=str(error))
             save(STATE / 'capture.json', current)
@@ -681,7 +608,7 @@ def begin_capture(operation, execution, seconds):
     if not OP.fullmatch(operation) or not 1 <= seconds <= 86400:
         raise RuntimeError('Invalid capture request or deadline')
     with exclusive():
-        app = authority(execution)
+        app = authority(execution, operation)
         admitted = app.get('status', {}).get('backup', {})
         if admitted.get('captureOperation') != operation or admitted.get('execution') != execution:
             raise RuntimeError('Capture operation no longer has current admission')
@@ -689,11 +616,10 @@ def begin_capture(operation, execution, seconds):
         if existing and existing['operation'] == operation:
             return result(existing)
         observe()
-        if existing and existing['state'] not in ('Captured', 'Cancelled'):
+        if existing and existing['state'] != 'Captured':
             raise RuntimeError('Conflicting or unresolved capture')
         current = {'operation': operation, 'execution': execution, 'state': 'Capturing',
-                   'startedAt': now(), 'resumed': False,
-                   'withdrawAfterCapture': admitted.get('withdrawAfterCapture', False)}
+                   'startedAt': now(), 'resumed': False}
         save(STATE / 'transition.json', current)
         save(STATE / 'capture.json', current)
     # Admission is durable before handoff. The child must not race our flock.
@@ -710,10 +636,7 @@ def begin_capture(operation, execution, seconds):
 def publish(operation):
     if not OP.fullmatch(operation):
         raise RuntimeError('Invalid capture operation')
-    cancelled = load(STATE / 'cancellations' / (operation + '.json'))
-    if cancelled and cancelled.get('captureOperation') == operation:
-        raise RuntimeError('Cancelled withdrawal capture is not publishable')
-    authority()
+    authority(publication=operation)
     directory = STAGING / 'captures' / operation
     manifest = verify_capture(directory)
     repo = repository_id()
@@ -733,7 +656,7 @@ def publish(operation):
     verify_dir = Path('/tmp') / ('verify-' + str(uuid.uuid4()))
     verify_dir.mkdir(mode=0o700)
     selected_restore(candidate, verify_dir)
-    authority()
+    authority(publication=operation)
     complete = backup('complete')
     if complete['tree'] != candidate['tree']:
         raise RuntimeError('Publication changed the verified capture tree')
@@ -755,8 +678,6 @@ def main():
     elif name in ('begin-capture', 'capture'):
         fn = begin_capture if name == 'begin-capture' else capture
         fn(sys.argv[2], sys.argv[3], int(sys.argv[4]))
-    elif name == 'cancel-withdrawal':
-        cancel_withdrawal()
     elif name == 'publish':
         publish(sys.argv[2])
     else:
