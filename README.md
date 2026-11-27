@@ -269,7 +269,7 @@ unset TOKEN
 rm -r "$CLIENT_WORK"
 ```
 
-Independently retain the client secret. Configure intended users and TOTP through native Keycloak administration; test fresh login and account linking, not matching-email assumptions. This preparation does not create a second provider installation.
+Independently retain the client secret. Configure intended users and, when selected for this profile, TOTP through native Keycloak administration; test fresh login and account linking, not matching-email assumptions. This preparation does not create a second provider installation.
 
 ### External backup inputs
 
@@ -1034,7 +1034,7 @@ Recovery after removal uses an independent target and a supported backup, not ad
 
 ## OIDC, MFA and token recovery
 
-Use the package configuration rendering and provider preparation above; do not hand-author allauth JSON. Require TOTP MFA for the intended users at the identity provider and verify an actual fresh browser login, not only an existing session. Paperless retains its own users, groups and object permissions. Deliberately link an existing account through its native profile; do not assume matching email establishes identity. First-login provisioning and permission assignment are native administration, not package startup tests.
+Use the package configuration rendering and provider preparation above; do not hand-author allauth JSON. Verify an actual fresh browser login, not only an existing session; when provider TOTP is selected for this profile, require it for the intended users and verify it during that login. Paperless retains its own users, groups and object permissions. Deliberately link an existing account through its native profile; do not assume matching email establishes identity. First-login provisioning and permission assignment are native administration, not package startup tests.
 
 A read-only browser group needs `view_document`, `view_uisettings`, `add_uisettings`, `change_uisettings` and `view_savedview`, in addition to its document object grants. Native metadata views may also need `view_tag`, `view_correspondent`, `view_documenttype` and `view_storagepath`. UI-settings permissions do not grant document modification or user administration.
 
