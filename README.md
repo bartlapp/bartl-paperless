@@ -4,7 +4,7 @@ Paperless over HTTPS with PostgreSQL, Redis, automatic initialization/reconstruc
 
 New deployment: follow the steps below. Existing deployment: [resume access](#resume-an-existing-deployment), then select an operation. Use workstation Bash, keep tracing off and stop at a failed command. Creation is not a replay or partial-state repair program.
 
-This checkout selects candidate `0.3.0-dev.10`: ordinary stop preserves already completed, bound native results without advancing work or reopening writers. It retains the native images from dev.9. Use its exact pinned archive and images with these procedures. The [live evidence and limits](#maintainer-procedures-and-evidence) record selected-profile acceptance; this remains an unpublished candidate, not stable release activation.
+These procedures select the published **prerelease `0.3.0-dev.10`**. Its [release record](https://github.com/bartlapp/bartl-paperless/releases/tag/v0.3.0-dev.10) owns selected-profile acceptance, exact artifacts and limits. Public acquisition is verified; publication did not include a new live installation. Helm's unversioned latest selection still selects the older stable release, so the commands below select this prerelease explicitly.
 
 - [Install](#package-and-target), [resume](#resume-an-existing-deployment) and [operate](#stop-start-and-restart)
 - [Capture](#capture-publication-and-retry), [recover and update by replacement](#recovery-and-replacement-upgrade)
